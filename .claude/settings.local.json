@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install *)",
+      "Bash(python main.py)",
+      "Bash(python3 -c \"import numpy\")",
+      "Bash(pip3 install *)",
+      "Bash(python3 -c \"import numpy; print\\('numpy ok'\\)\")",
+      "Bash(python3 main.py)",
+      "Bash(awk ' *)",
+      "Bash(python3 -c ' *)",
+      "Bash(python3 -c \"from config.settings import validate_settings; validate_settings\\(\\)\")",
+      "Bash(python3 -c \"import ast, sys; files=['main.py','config/settings.py','risk/manager.py','execution/order.py','database/db.py','database/models.py','signals/engine.py','data/option_chain.py']; [print\\(f\\) or ast.parse\\(open\\(f\\).read\\(\\)\\) for f in files]; print\\('All syntax OK'\\)\")"
+    ]
+  }
+}

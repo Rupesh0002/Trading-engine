@@ -1,0 +1,9 @@
+.env
+config/access_token.txt
+logs/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+ml/models/
+*.pkl
