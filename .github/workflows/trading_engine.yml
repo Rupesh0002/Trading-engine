@@ -141,7 +141,7 @@ jobs:
           git config user.name "Trading Bot"
           git config user.email "bot@noreply.github.com"
           git pull --rebase origin main || true
-          git add state.json trades_log.csv signals_log.csv || true
+          git add state.json trades_log.csv signals_log.csv ml/models/pattern_memory.json ml/models/xgboost_model.pkl || true
           git diff --staged --quiet || git commit -m "candle: $(TZ='Asia/Kolkata' date '+%Y-%m-%d %H:%M IST')"
           git push || true
         continue-on-error: true

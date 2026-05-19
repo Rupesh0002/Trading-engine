@@ -229,7 +229,7 @@ class TradingScheduler:
         self.open_positions.clear()
         self.risk_manager.open_positions = 0
 
-    def _day_summary(self) -> None:
+    def _day_summary(self, sync_retrain: bool = False) -> None:
         """15:30 IST — print and send Telegram day summary."""
         try:
             from telegram_alerts import send_day_summary
@@ -260,8 +260,8 @@ class TradingScheduler:
                 paper=PAPER_MODE,
             )
 
-        # Retrain ML model in background if trades happened today
-        self._retrain_eod(trades_today)
+        # Retrain ML model (sync in candle/Actions mode, background in scheduler mode)
+        self._retrain_eod(trades_today, sync=sync_retrain)
 
     # ──────────────────────────────────────────────────────────────────────
     # Core per-candle cycle
@@ -732,18 +732,22 @@ class TradingScheduler:
         except Exception as exc:
             logger.warning("Could not write ML signal row: %s", exc)
 
-    def _retrain_eod(self, trades_today: int) -> None:
-        """Retrain the XGBoost model in a background thread after market close."""
+    def _retrain_eod(self, trades_today: int, sync: bool = False) -> None:
+        """Retrain the XGBoost model after market close.
+
+        sync=True  → runs in the calling thread (GitHub Actions candle mode,
+                      where the process exits immediately after run_once() returns).
+        sync=False → runs in a background thread (local scheduler mode).
+        """
         if trades_today == 0:
             logger.info("No trades today — skipping EOD ML retraining.")
             return
 
         def _run() -> None:
             try:
-                logger.info("EOD ML retraining started (background thread) ...")
+                logger.info("EOD ML retraining started ...")
                 from ml.train import train
 
-                # Collect all backtest signal CSVs + today's live signal CSV
                 csvs = sorted(glob.glob(os.path.join("reports", "signals_*.csv")))
                 if os.path.exists(self._LIVE_ML_CSV):
                     csvs.append(self._LIVE_ML_CSV)
@@ -760,9 +764,12 @@ class TradingScheduler:
             except Exception as exc:
                 logger.error("EOD ML retraining failed: %s", exc)
 
-        t = threading.Thread(target=_run, daemon=True, name="ml-retrain-eod")
-        t.start()
-        logger.info("EOD ML retraining scheduled in background (trades today: %d).", trades_today)
+        if sync:
+            _run()
+        else:
+            t = threading.Thread(target=_run, daemon=True, name="ml-retrain-eod")
+            t.start()
+            logger.info("EOD ML retraining scheduled in background (trades today: %d).", trades_today)
 
     # ──────────────────────────────────────────────────────────────────────
     # Single-candle mode (GitHub Actions)
@@ -797,7 +804,7 @@ class TradingScheduler:
             self._hard_close()
             self.open_positions.clear()
             self.risk_manager.open_positions = 0
-            self._day_summary()
+            self._day_summary(sync_retrain=True)
 
         else:
             logger.info(
