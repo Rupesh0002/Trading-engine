@@ -50,9 +50,14 @@ def load_and_prepare(csv_path: str) -> Tuple[pd.DataFrame, pd.Series]:
     df = pd.read_csv(csv_path)
     logger.info("Loaded %d rows from %s", len(df), csv_path)
 
-    # Keep only rows with actual trade outcomes
-    df = df[df["trade_taken"] == 1].copy()
-    logger.info("%d rows after filtering to trade_taken=1", len(df))
+    # Use both actual trades (trade_taken=1) AND shadow signals (trade_taken=0 with outcome != -1).
+    # Shadow signals are capacity-blocked or near-miss signals with hypothetical outcomes,
+    # giving the ML counterfactual data about patterns that existed but weren't traded.
+    df = df[df["outcome"] != -1].copy()
+    n_actual = int((df["trade_taken"] == 1).sum())
+    n_shadow = int((df["trade_taken"] == 0).sum())
+    logger.info("%d rows after filtering to trade_taken=1", n_actual)  # keep log label for compat
+    logger.info("  (%d actual trades + %d shadow/counterfactual signals)", n_actual, n_shadow)
 
     if df.empty:
         raise ValueError(

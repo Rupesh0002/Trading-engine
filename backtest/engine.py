@@ -346,33 +346,51 @@ class BacktestEngine:
 
             if candle_time < _SIGNAL_START_TIME:
                 continue
-            if len(open_positions) >= MAX_OPEN_POSITIONS:
+            # Check entry candle availability early — needed before shadow logging
+            if i + 1 >= len(day_df):
                 continue
-            if daily_trade_count >= MAX_DAILY_TRADES_OTM:
-                continue  # hard cap regardless of signal strength
+            if day_df.iloc[i + 1]["timestamp"].time() >= _TRADE_END_TIME:
+                continue
 
-            # Evaluate signal on all candles up to now (no lookahead).
-            # Per-index ADX threshold passed to signal engine.
-            # PCR=1.0 (neutral) — historical option chain unavailable in backtest.
+            # Evaluate signal before capacity checks so we can shadow-log blocked signals
             window_df = day_df.iloc[: i + 1].copy()
             signal    = self.signal_engine.evaluate(
                 window_df, pcr=1.0, daily_candle=prev_candle,
                 adx_threshold=self._adx_threshold,
             )
 
+            # Near-miss WAIT: conditions almost met but not enough for a trade.
+            # Shadow-log so ML learns "this market state was close to tradeable."
             if signal.direction not in ("CALL", "PUT"):
+                if signal.conditions_met >= MIN_CONDITIONS - 1:
+                    self._log_shadow_signal(
+                        signal, candle, day, dte, capital + daily_pnl, day_df, i + 1,
+                    )
+                continue
+
+            # Capacity-blocked signals — log shadow before each skip so ML learns
+            # what patterns existed when we couldn't trade them.
+            if len(open_positions) >= MAX_OPEN_POSITIONS:
+                self._log_shadow_signal(
+                    signal, candle, day, dte, capital + daily_pnl, day_df, i + 1,
+                )
+                continue
+            if daily_trade_count >= MAX_DAILY_TRADES_OTM:
+                self._log_shadow_signal(
+                    signal, candle, day, dte, capital + daily_pnl, day_df, i + 1,
+                )
                 continue
             # Soft cap: 2nd trade only allowed for 5/5 signals
             if daily_trade_count >= MAX_DAILY_TRADES and signal.conditions_met < STRONG_SIGNAL_THRESHOLD:
+                self._log_shadow_signal(
+                    signal, candle, day, dte, capital + daily_pnl, day_df, i + 1,
+                )
                 continue
-            if i + 1 >= len(day_df):
-                continue
-            # Never enter when the next candle is the hard-close candle.
-            if day_df.iloc[i + 1]["timestamp"].time() >= _TRADE_END_TIME:
-                continue
-            # Same-direction daily cap: one CALL and one PUT per day maximum.
-            # Prevents doubling down on correlated macro moves (e.g. all indices PUT same day).
+            # Same-direction daily cap
             if signal.direction in directions_taken:
+                self._log_shadow_signal(
+                    signal, candle, day, dte, capital + daily_pnl, day_df, i + 1,
+                )
                 continue
 
             d          = signal.details
@@ -577,6 +595,129 @@ class BacktestEngine:
     # ------------------------------------------------------------------
     # Option premium simulation helpers
     # ------------------------------------------------------------------
+
+    def _log_shadow_signal(
+        self,
+        signal,
+        candle,
+        day,
+        dte: int,
+        running_capital: float,
+        day_df: pd.DataFrame,
+        entry_candle_idx: int,
+    ) -> None:
+        """
+        Log a signal that was evaluated but not traded.
+        For WAIT near-misses, infer direction from EMA bias.
+        Computes hypothetical outcome by scanning remaining candles.
+        """
+        d         = signal.details
+        direction = signal.direction
+
+        if direction not in ("CALL", "PUT"):
+            ema_bull = bool(d.get("ema_bull"))
+            ema_bear = bool(d.get("ema_bear"))
+            if ema_bull and not ema_bear:
+                direction = "CALL"
+            elif ema_bear and not ema_bull:
+                direction = "PUT"
+            else:
+                return  # ambiguous EMA — no reliable direction to shadow
+
+        if entry_candle_idx >= len(day_df):
+            return
+
+        next_candle   = day_df.iloc[entry_candle_idx]
+        entry_spot    = float(next_candle["open"])
+        entry_premium = self._simulate_entry_premium(entry_spot, dte)
+
+        if not (MIN_PREMIUM <= entry_premium <= MAX_PREMIUM):
+            return  # premium out of range — shadow not meaningful
+
+        outcome = self._compute_shadow_outcome(
+            day_df, entry_candle_idx + 1, direction, entry_spot, entry_premium,
+        )
+
+        spot_close = float(d.get("close", 0))
+        vwap_val   = float(d.get("vwap", 0))
+        fib_level  = d.get("fib_level") or 0.0
+        vol_ma     = float(d.get("vol_ma", 1) or 1)
+        vol_cur    = float(d.get("current_vol", 0))
+
+        self._signal_rows.append({
+            "signal_id":     uuid.uuid4().hex[:8].upper(),
+            "date":          str(day),
+            "time":          str(candle["timestamp"].time()),
+            "index":         self.index,
+            "direction":     direction,
+            "direction_int": 1 if direction == "CALL" else 0,
+            "conditions_met": signal.conditions_met,
+            "close":         round(spot_close, 2),
+            "vwap":          round(vwap_val, 2),
+            "vwap_distance": round(spot_close - vwap_val, 2),
+            "near_fib":      int(bool(d.get("near_fib"))),
+            "fib_label":     d.get("fib_label", ""),
+            "fib_level":     round(fib_level, 2),
+            "fib_distance":  round(abs(spot_close - fib_level), 2) if fib_level else "",
+            "rsi":           round(d.get("rsi") or 50, 2),
+            "adx":           round(float(d.get("adx") or 0), 2),
+            "ema_bull":      int(bool(d.get("ema_bull"))),
+            "ema_bear":      int(bool(d.get("ema_bear"))),
+            "vol_spike":     int(bool(d.get("vol_spike"))),
+            "vol_ratio":     round(vol_cur / vol_ma, 2) if vol_ma else "",
+            "pcr":           d.get("pcr", ""),
+            "swing_high":    round(float(d.get("swing_high", 0)), 2),
+            "swing_low":     round(float(d.get("swing_low", 0)), 2),
+            "dte":           dte,
+            "capital_before": running_capital,
+            "capital_used":  "",
+            "risk_amount":   "",
+            "entry_premium": entry_premium,
+            "stop_loss":     round(entry_premium * (1.0 - STOP_LOSS_PCT), 2),
+            "target":        round(entry_premium * (1.0 + STOP_LOSS_PCT * MIN_PROFIT_RATIO), 2),
+            "exit_premium":  "",
+            "pnl":           "",
+            "pnl_pct":       "",
+            "exit_reason":   "shadow_not_traded",
+            "trade_taken":   0,
+            "outcome":       outcome,
+        })
+
+    def _compute_shadow_outcome(
+        self,
+        day_df: pd.DataFrame,
+        scan_from_idx: int,
+        direction: str,
+        entry_spot: float,
+        entry_premium: float,
+    ) -> int:
+        """
+        Simulate what would have happened if a signal was traded.
+        Scans remaining candles using the same SL/target logic as actual trades.
+        Returns 1 (WIN) or 0 (LOSS).
+        """
+        sl_price  = round(entry_premium * (1.0 - STOP_LOSS_PCT), 2)
+        tgt_price = round(entry_premium * (1.0 + STOP_LOSS_PCT * MIN_PROFIT_RATIO), 2)
+        pos = {"direction": direction, "entry_spot": entry_spot, "entry_premium": entry_premium}
+
+        for j in range(scan_from_idx, len(day_df)):
+            candle    = day_df.iloc[j]
+            spot_low  = float(candle["low"])
+            spot_high = float(candle["high"])
+            if direction == "PUT":
+                opt_best  = self._option_price_at(pos, spot_low)
+                opt_worst = self._option_price_at(pos, spot_high)
+            else:
+                opt_best  = self._option_price_at(pos, spot_high)
+                opt_worst = self._option_price_at(pos, spot_low)
+            if opt_best >= tgt_price:
+                return 1
+            if opt_worst <= sl_price:
+                return 0
+
+        # EOD hard close — win if premium above entry
+        final_spot = float(day_df.iloc[-1]["close"])
+        return 1 if self._option_price_at(pos, final_spot) > entry_premium else 0
 
     @staticmethod
     def _simulate_entry_premium(spot: float, dte_days: int) -> float:
