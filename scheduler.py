@@ -92,6 +92,7 @@ class TradingScheduler:
         self.daily_trades:   Dict[str, int] = {idx: 0 for idx in ACTIVE_INDICES}
         self.directions_traded_today: set = set()   # global CALL/PUT cap across all indices
         self.profit_lock_done: bool = False          # 2 PM profit lock fires once per day
+        self.shadow_signals_today: int = 0          # signals evaluated but not traded today
         self.running_capital = TRADING_CAPITAL
         self._today: Optional[date] = None
 
@@ -240,6 +241,17 @@ class TradingScheduler:
         pnl          = self.risk_manager.daily_pnl
         capital_now  = self.running_capital + pnl
 
+        # Read ML AUC from metadata written by the last retrain
+        ml_auc: Optional[float] = None
+        try:
+            import json as _json
+            _meta_path = os.path.join("ml", "models", "model_metadata.json")
+            if os.path.exists(_meta_path):
+                with open(_meta_path) as _f:
+                    ml_auc = float(_json.load(_f).get("cv_auc", 0)) or None
+        except Exception:
+            pass
+
         lines = [
             "─" * 50,
             f"  DAY SUMMARY  {ist_now_str()}",
@@ -247,6 +259,8 @@ class TradingScheduler:
             f"  Daily P&L    : ₹{pnl:+,.2f}",
             f"  Capital      : ₹{capital_now:,.0f}",
             f"  Mode         : {'PAPER' if PAPER_MODE else 'LIVE'}",
+            f"  ML AUC       : {ml_auc:.3f}" if ml_auc else "  ML AUC       : n/a",
+            f"  Shadow sigs  : {self.shadow_signals_today}",
             "─" * 50,
         ]
         for line in lines:
@@ -258,6 +272,8 @@ class TradingScheduler:
                 pnl=pnl,
                 capital=capital_now,
                 paper=PAPER_MODE,
+                ml_auc=ml_auc,
+                shadow_count=self.shadow_signals_today,
             )
 
         # Retrain ML model (sync in candle/Actions mode, background in scheduler mode)
@@ -395,6 +411,8 @@ class TradingScheduler:
                 )
 
             if not fired:
+                if result.conditions_met >= MIN_CONDITIONS - 1:
+                    self.shadow_signals_today += 1  # near-miss WAIT
                 try:
                     _exp_nm = self.option_chain._nearest_expiry(index)
                     from datetime import date as _date_nm
@@ -411,6 +429,7 @@ class TradingScheduler:
                     "[%s] Daily trade limit (%d). 2nd trade requires 5/5 signal (got %d/5).",
                     index, MAX_DAILY_TRADES, result.conditions_met,
                 )
+                self.shadow_signals_today += 1
                 continue
 
             # Global same-direction cap: skip if this direction already traded today
@@ -419,6 +438,7 @@ class TradingScheduler:
                     "[%s] %s already traded today — skipping correlated signal.",
                     index, result.direction,
                 )
+                self.shadow_signals_today += 1
                 continue
 
             # Keep best signal (highest conditions_met)
@@ -496,6 +516,7 @@ class TradingScheduler:
                 "[%s] Adaptive+ML blocked: confidence=%.2f < threshold=%.2f | %s",
                 index, blended_conf, ML_MIN_CONFIDENCE, adaptive_reason,
             )
+            self.shadow_signals_today += 1
             return
         ml_conf = blended_conf
 
@@ -835,6 +856,7 @@ class TradingScheduler:
             self.directions_traded_today  = set(s.get("directions_traded_today", []))
             self.profit_lock_done         = bool(s.get("profit_lock_done", False))
             self.morning_pcr              = s.get("morning_pcr", {})
+            self.shadow_signals_today     = int(s.get("shadow_signals_today", 0))
 
             try:
                 self.risk_manager._daily_pnl = float(s.get("daily_pnl", 0.0))
@@ -883,6 +905,7 @@ class TradingScheduler:
                 "profit_lock_done":        self.profit_lock_done,
                 "morning_pcr":             self.morning_pcr,
                 "open_positions":          positions,
+                "shadow_signals_today":    self.shadow_signals_today,
             }
             with open(self._STATE_FILE, "w") as f:
                 json.dump(state, f, indent=2, default=str)
@@ -898,6 +921,7 @@ class TradingScheduler:
         self.daily_trades = {idx: 0 for idx in ACTIVE_INDICES}
         self.directions_traded_today = set()
         self.profit_lock_done = False
+        self.shadow_signals_today = 0
         logger.info("New trading day — session state reset.")
 
     def _get_daily_candle(self, index: str, day) -> Optional[Dict]:

@@ -170,15 +170,20 @@ def send_day_summary(
     pnl: float,
     capital: float,
     paper: bool = True,
+    ml_auc: float = None,
+    shadow_count: int = 0,
 ) -> None:
     """15:30 — end-of-day summary."""
     sign = "📈" if pnl >= 0 else "📉"
     mode = "📄 PAPER" if paper else "💰 LIVE"
+    auc_line = f"ML AUC  : {ml_auc:.3f}" if ml_auc else "ML AUC  : n/a"
     _send(
         f"{sign} <b>Day Summary</b>  [{mode}]\n"
         f"Trades  : {trades}\n"
         f"P&L     : ₹{pnl:+,.2f}\n"
         f"Capital : ₹{capital:,.0f}\n"
+        f"{auc_line}\n"
+        f"Shadows : {shadow_count}\n"
         f"──────────────────"
     )
 

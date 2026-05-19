@@ -111,10 +111,22 @@ def train(csv_paths: list[str]) -> None:
     print(classification_report(y, y_pred, target_names=["LOSS", "WIN"]))
     print(f"  In-sample AUC : {roc_auc_score(y, y_prob):.3f}")
 
-    # Save
+    # Save model + metadata
     os.makedirs(MODEL_DIR, exist_ok=True)
     with open(MODEL_PATH, "wb") as f:
         pickle.dump(model, f)
+
+    import json as _json
+    from datetime import datetime as _dt
+    metadata = {
+        "cv_auc":      round(float(scores.mean()), 4),
+        "cv_auc_std":  round(float(scores.std()), 4),
+        "n_samples":   int(len(y)),
+        "n_features":  int(len(FEATURE_COLS)),
+        "trained_at":  _dt.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    with open(os.path.join(MODEL_DIR, "model_metadata.json"), "w") as f:
+        _json.dump(metadata, f, indent=2)
     print(f"\n  Model saved → {MODEL_PATH}")
     print("─" * 55)
     print()

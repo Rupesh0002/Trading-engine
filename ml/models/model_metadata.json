@@ -1,0 +1,7 @@
+{
+  "cv_auc": 0.599,
+  "cv_auc_std": 0.0196,
+  "n_samples": 3867,
+  "n_features": 16,
+  "trained_at": "2026-05-19T09:34:45Z"
+}
