@@ -124,7 +124,7 @@ jobs:
           BANKNIFTY_STRIKE_STEP:      "100"
           SENSEX_STRIKE_STEP:         "100"
           DATABASE_PORT:              "5432"
-          ML_MIN_CONFIDENCE:          "0.40"
+          ML_MIN_CONFIDENCE:          "0.30"
           ML_MODEL_PATH:              "ml/models/xgboost_model.pkl"
           LOG_LEVEL:                  "INFO"
           DASHBOARD_PORT:             "8501"

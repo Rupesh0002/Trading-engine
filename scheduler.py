@@ -511,13 +511,34 @@ class TradingScheduler:
             index, result.direction, signal_details, dte,
             datetime.now(IST).hour, ml_conf,
         )
+        # ── ML confidence tier ─────────────────────────────────────────────
+        # ML_MIN_CONFIDENCE = hard-block floor (adaptive hard-block / proven loser).
+        # Indicators passed 4/5 → always trade UNLESS the pattern is a proven loser.
+        # Uncertain ML (0.30–0.50) → half position, not a skip.
+        # Strong ML (≥ 0.50)      → full position.
+        _ML_REDUCE_THRESHOLD = 0.50   # below this: half position
         if blended_conf < ML_MIN_CONFIDENCE:
             logger.info(
-                "[%s] Adaptive+ML blocked: confidence=%.2f < threshold=%.2f | %s",
-                index, blended_conf, ML_MIN_CONFIDENCE, adaptive_reason,
+                "[%s] ML+Adaptive BLOCK: confidence=%.2f — proven loser pattern | %s",
+                index, blended_conf, adaptive_reason,
             )
             self.shadow_signals_today += 1
             return
+
+        ml_tier = "strong" if blended_conf >= 0.60 else (
+                  "normal" if blended_conf >= _ML_REDUCE_THRESHOLD else "weak")
+
+        if ml_tier == "weak":
+            # Indicators say YES, ML is uncertain — trade at half size with caution.
+            # Never fully block a clean indicator signal just because ML lacks history.
+            lot_size = INDEX_CONFIG[index]["lot_size"]
+            lots     = max(lots // 2, 1)
+            quantity = lots * lot_size
+            logger.info(
+                "[%s] ML uncertain (%.2f) — indicators valid, entering at half position | %s",
+                index, blended_conf, adaptive_reason,
+            )
+
         ml_conf = blended_conf
 
         levels     = self.risk_manager.compute_exit_levels(premium, conditions_met=score)
@@ -558,6 +579,8 @@ class TradingScheduler:
             "rsi":           d.get("rsi"),
             "fib_level":     d.get("fib_level"),
             "pcr_bias":      self._pcr_bias_label(best["pcr"]),
+            "ml_tier":       ml_tier,
+            "ml_conf":       round(blended_conf, 3),
             # stored for ML CSV logging on close
             "signal_details": d,
             "actual_risk":   actual_risk,
@@ -607,6 +630,8 @@ class TradingScheduler:
                 sl=levels["stop_loss"],
                 target=levels["target"],
                 paper=PAPER_MODE,
+                ml_tier=ml_tier,
+                ml_conf=round(blended_conf, 2),
             )
 
     # ──────────────────────────────────────────────────────────────────────

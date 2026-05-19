@@ -100,11 +100,15 @@ def send_trade_entered(
     sl: float,
     target: float,
     paper: bool = True,
+    ml_tier: str = "normal",
+    ml_conf: float = None,
 ) -> None:
     """Trade entry confirmation."""
     arrow  = "🟢" if direction == "CALL" else "🔴"
     mode   = "📄 PAPER" if paper else "💰 LIVE"
     opt    = "CE" if direction == "CALL" else "PE"
+    tier_tag = {"strong": "★ Strong", "normal": "✓ Normal", "weak": "~ Cautious"}.get(ml_tier, "")
+    conf_str = f"  [{tier_tag}  ML={ml_conf:.2f}]" if ml_conf else ""
     _send(
         f"{arrow} <b>Trade Entered — {index} {direction}</b>  [{mode}]\n"
         f"Symbol  : {index}{expiry}{strike}{opt}\n"
@@ -112,6 +116,7 @@ def send_trade_entered(
         f"Premium : ₹{premium:.2f}\n"
         f"SL      : ₹{sl:.2f}\n"
         f"Target  : ₹{target:.2f}\n"
+        f"ML      :{conf_str}\n"
         f"──────────────────"
     )
 
