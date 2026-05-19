@@ -1,7 +1,11 @@
 """
 Zerodha Kite Connect authentication.
-Handles login flow and access token persistence.
-All credentials are read from .env via settings.py.
+
+Two paths:
+  GitHub Actions  — KITE_ACCESS_TOKEN is set as an env var (from GitHub Secrets).
+                    Used directly. No login flow, no input() calls.
+  Local dev       — KITE_ACCESS_TOKEN not set. Falls back to interactive login
+                    using request_token pasted from browser redirect.
 """
 import os
 import sys
@@ -19,21 +23,37 @@ def get_kite_client():
         sys.exit(1)
 
     if not KITE_API_KEY or KITE_API_KEY == "your_api_key_here":
-        print("[ERROR] KITE_API_KEY not set in .env. Cannot authenticate.")
+        print("[ERROR] KITE_API_KEY not set. Cannot authenticate.")
         sys.exit(1)
 
     kite = KiteConnect(api_key=KITE_API_KEY)
-    token = _load_token()
 
-    if token:
-        kite.set_access_token(token)
+    # ── GitHub Actions path: token already in environment ─────────────────
+    env_token = os.getenv("KITE_ACCESS_TOKEN", "").strip()
+    if env_token:
+        kite.set_access_token(env_token)
         try:
-            kite.profile()  # verify token is still valid
+            profile = kite.profile()
+            print(f"[AUTH] Connected as: {profile['user_name']}")
+            return kite
+        except Exception as e:
+            raise ValueError(
+                f"[AUTH] KITE_ACCESS_TOKEN is invalid or expired. "
+                f"Update it in GitHub Secrets. Error: {e}"
+            )
+
+    # ── Local dev path: check saved token file first ──────────────────────
+    file_token = _load_token()
+    if file_token:
+        kite.set_access_token(file_token)
+        try:
+            kite.profile()
             print(f"[AUTH] Token loaded from {ACCESS_TOKEN_FILE}")
             return kite
         except Exception:
             print("[AUTH] Saved token expired. Re-authenticating...")
 
+    # ── Local dev path: interactive login (never runs on GitHub Actions) ──
     token = _authenticate(kite)
     kite.set_access_token(token)
     return kite
@@ -53,6 +73,10 @@ def _save_token(token: str) -> None:
 
 
 def _authenticate(kite) -> str:
+    """Interactive login — local development only. Never called on GitHub Actions."""
+    if not KITE_API_SECRET:
+        raise ValueError("[AUTH] KITE_API_SECRET not set. Cannot authenticate.")
+
     login_url = kite.login_url()
     print()
     print("─" * 60)
