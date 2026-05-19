@@ -1,154 +1,151 @@
 name: Trading Engine
 
-# ── Triggers ────────────────────────────────────────────────────────────────
+# ── One cron per 15-min candle (IST = UTC+5:30) ─────────────────────────────
 on:
   schedule:
-    # 09:00 IST = 03:30 UTC  |  runs Mon–Fri only
-    - cron: '30 3 * * 1-5'
-  workflow_dispatch:          # manual start from GitHub Actions UI
+    - cron: '45 3 * * 1-5'   # 09:15 IST — morning setup
+    - cron: '0 4 * * 1-5'    # 09:30 IST
+    - cron: '15 4 * * 1-5'   # 09:45 IST
+    - cron: '30 4 * * 1-5'   # 10:00 IST
+    - cron: '45 4 * * 1-5'   # 10:15 IST
+    - cron: '0 5 * * 1-5'    # 10:30 IST
+    - cron: '15 5 * * 1-5'   # 10:45 IST
+    - cron: '30 5 * * 1-5'   # 11:00 IST
+    - cron: '45 5 * * 1-5'   # 11:15 IST
+    - cron: '0 6 * * 1-5'    # 11:30 IST
+    - cron: '15 6 * * 1-5'   # 11:45 IST
+    - cron: '30 6 * * 1-5'   # 12:00 IST
+    - cron: '45 6 * * 1-5'   # 12:15 IST
+    - cron: '0 7 * * 1-5'    # 12:30 IST
+    - cron: '15 7 * * 1-5'   # 12:45 IST
+    - cron: '30 7 * * 1-5'   # 13:00 IST
+    - cron: '45 7 * * 1-5'   # 13:15 IST
+    - cron: '0 8 * * 1-5'    # 13:30 IST
+    - cron: '15 8 * * 1-5'   # 13:45 IST
+    - cron: '30 8 * * 1-5'   # 14:00 IST
+    - cron: '45 8 * * 1-5'   # 14:15 IST
+    - cron: '0 9 * * 1-5'    # 14:30 IST
+    - cron: '15 9 * * 1-5'   # 14:45 IST
+    - cron: '30 9 * * 1-5'   # 15:00 IST — hard close
+    - cron: '45 9 * * 1-5'   # 15:15 IST — day summary
+  workflow_dispatch:          # manual trigger for testing
 
 jobs:
-  trade:
+  candle-check:
     runs-on: ubuntu-latest
-    timeout-minutes: 370      # full trading day (09:00–15:30 IST = 6h30m)
-
-    env:
-      # ════════════════════════════════════════════════════════════
-      # SECRETS — pulled from GitHub Secrets (never hardcoded here)
-      # ════════════════════════════════════════════════════════════
-      KITE_API_KEY:               ${{ secrets.KITE_API_KEY }}
-      KITE_API_SECRET:            ${{ secrets.KITE_API_SECRET }}
-      KITE_ACCESS_TOKEN:          ${{ secrets.KITE_ACCESS_TOKEN }}
-      TELEGRAM_BOT_TOKEN:         ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID:           ${{ secrets.TELEGRAM_CHAT_ID }}
-      DATABASE_HOST:              ${{ secrets.DATABASE_HOST }}
-      DATABASE_USERNAME:          ${{ secrets.DATABASE_USERNAME }}
-      DATABASE_PASSWORD:          ${{ secrets.DATABASE_PASSWORD }}
-      DATABASE_NAME:              ${{ secrets.DATABASE_NAME }}
-
-      # ════════════════════════════════════════════════════════════
-      # HARDCODED CONFIG — non-sensitive numbers, flags, settings
-      # ════════════════════════════════════════════════════════════
-
-      # ── Trading mode ──────────────────────────────────────────
-      PAPER_MODE:                 "True"
-
-      # ── Instruments ───────────────────────────────────────────
-      ACTIVE_INDEX:               "NIFTY"
-      ACTIVE_INDICES:             "NIFTY,BANKNIFTY,SENSEX"
-      CANDLE_INTERVAL:            "15minute"
-      CANDLE_MINUTES:             "15"
-
-      # ── Session times (IST 24h) ───────────────────────────────
-      MARKET_OPEN:                "09:15"
-      TRADE_START:                "09:30"
-      SIGNAL_START:               "10:00"
-      TRADE_END:                  "15:00"
-      MARKET_CLOSE:               "15:30"
-
-      # ── Capital and risk ──────────────────────────────────────
-      TRADING_CAPITAL:            "100000"
-      RISK_PER_TRADE_PCT:         "0.05"
-      STOP_LOSS_PCT:              "0.20"
-      TARGET_PCT:                 "0.50"
-      TRAILING_SL_PCT:            "0.50"
-      DAILY_LOSS_LIMIT_PCT:       "0.05"
-      MAX_OPEN_POSITIONS:         "1"
-      MIN_PREMIUM:                "30"
-      MAX_PREMIUM:                "500"
-
-      # ── Flexible profit exit ──────────────────────────────────
-      MIN_PROFIT_RATIO:           "2.5"
-      MAX_PROFIT_RATIO:           "3.0"
-
-      # ── Signal conditions ─────────────────────────────────────
-      MIN_CONDITIONS:             "4"
-      EMA_FAST_PERIOD:            "20"
-      EMA_SLOW_PERIOD:            "50"
-      RSI_PERIOD:                 "14"
-      RSI_OVERSOLD:               "55"
-      RSI_OVERBOUGHT:             "45"
-      VOLUME_SPIKE_MULT:          "1.5"
-      ADX_PERIOD:                 "14"
-      ADX_THRESHOLD:              "20"
-      NIFTY_ADX_THRESHOLD:        "25"
-      BANKNIFTY_ADX_THRESHOLD:    "25"
-      SENSEX_ADX_THRESHOLD:       "20"
-      PDH_PROXIMITY_PCT:          "0.005"
-      PDH_MIN_RANGE_PCT:          "0.005"
-      FIB_PROXIMITY_PCT:          "0.15"
-      FIB_MIN_SWING_PCT:          "0.50"
-      VWAP_ZONE_PCT:              "0.15"
-      MAX_DAILY_TRADES:           "1"
-      MAX_DAILY_TRADES_OTM:       "2"
-
-      # ── Market filters ────────────────────────────────────────
-      PCR_MIN:                    "0.6"
-      PCR_MAX:                    "1.5"
-      PCR_BULL_MIN:               "1.1"
-      PCR_BEAR_MAX:               "0.7"
-      VIX_MAX:                    "20.0"
-
-      # ── Strike selection ──────────────────────────────────────
-      STRONG_SIGNAL_THRESHOLD:    "5"
-      OTM_STRIKES_AWAY:           "1"
-      ENABLE_OPTION_SELLING:      "False"
-      WEAK_SIGNAL_THRESHOLD:      "3"
-      STRIKE_TYPE:                "ATM"
-      PRODUCT_TYPE:               "MIS"
-
-      # ── Lot sizes and strike steps ────────────────────────────
-      NIFTY_LOT_SIZE:             "50"
-      BANKNIFTY_LOT_SIZE:         "15"
-      SENSEX_LOT_SIZE:            "10"
-      NIFTY_STRIKE_STEP:          "50"
-      BANKNIFTY_STRIKE_STEP:      "100"
-      SENSEX_STRIKE_STEP:         "100"
-
-      # ── Database (non-sensitive) ──────────────────────────────
-      DATABASE_PORT:              "5432"
-
-      # ── ML ────────────────────────────────────────────────────
-      ML_MIN_CONFIDENCE:          "0.65"
-      ML_MODEL_PATH:              "ml/models/xgboost_model.pkl"
-
-      # ── Logging and dashboard ─────────────────────────────────
-      LOG_LEVEL:                  "INFO"
-      DASHBOARD_PORT:             "8501"
-      DASHBOARD_REFRESH:          "5"
-      OI_FETCH_INTERVAL:          "60"
-      REPORTS_DIR:                "reports"
-
-      # ── Backtest defaults ─────────────────────────────────────
-      BACKTEST_START:             "2023-01-01"
-      BACKTEST_END:               "2024-12-31"
-      BACKTEST_VIX:               "15.0"
+    timeout-minutes: 10       # each run must finish in 10 min
+    permissions:
+      contents: write
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-          cache: "pip"
+          python-version: '3.11'
+          cache: 'pip'
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
       - name: Write Kite access token
-        # Access token changes daily — update KITE_ACCESS_TOKEN secret each morning
         run: |
           mkdir -p config
           echo "${{ secrets.KITE_ACCESS_TOKEN }}" > config/access_token.txt
 
-      - name: Restore ML model cache
-        uses: actions/cache@v4
-        with:
-          path: ml/models/
-          key: ml-models-${{ github.run_id }}
-          restore-keys: ml-models-
+      - name: Run candle check
+        env:
+          # ── Secrets ───────────────────────────────────────────────
+          KITE_API_KEY:               ${{ secrets.KITE_API_KEY }}
+          KITE_API_SECRET:            ${{ secrets.KITE_API_SECRET }}
+          KITE_ACCESS_TOKEN:          ${{ secrets.KITE_ACCESS_TOKEN }}
+          TELEGRAM_BOT_TOKEN:         ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:           ${{ secrets.TELEGRAM_CHAT_ID }}
+          DATABASE_HOST:              ${{ secrets.DATABASE_HOST }}
+          DATABASE_USERNAME:          ${{ secrets.DATABASE_USERNAME }}
+          DATABASE_PASSWORD:          ${{ secrets.DATABASE_PASSWORD }}
+          DATABASE_NAME:              ${{ secrets.DATABASE_NAME }}
 
-      - name: Run trading engine
-        run: python main.py
+          # ── Hardcoded config ──────────────────────────────────────
+          PAPER_MODE:                 "True"
+          ACTIVE_INDEX:               "NIFTY"
+          ACTIVE_INDICES:             "NIFTY,BANKNIFTY,SENSEX"
+          CANDLE_INTERVAL:            "15minute"
+          CANDLE_MINUTES:             "15"
+          MARKET_OPEN:                "09:15"
+          TRADE_START:                "09:30"
+          SIGNAL_START:               "10:00"
+          TRADE_END:                  "15:00"
+          MARKET_CLOSE:               "15:30"
+          TRADING_CAPITAL:            "100000"
+          RISK_PER_TRADE_PCT:         "0.05"
+          STOP_LOSS_PCT:              "0.20"
+          TARGET_PCT:                 "0.50"
+          TRAILING_SL_PCT:            "0.50"
+          DAILY_LOSS_LIMIT_PCT:       "0.05"
+          MAX_OPEN_POSITIONS:         "1"
+          MIN_PREMIUM:                "30"
+          MAX_PREMIUM:                "500"
+          MIN_PROFIT_RATIO:           "2.5"
+          MAX_PROFIT_RATIO:           "3.0"
+          MIN_CONDITIONS:             "4"
+          EMA_FAST_PERIOD:            "20"
+          EMA_SLOW_PERIOD:            "50"
+          RSI_PERIOD:                 "14"
+          RSI_OVERSOLD:               "55"
+          RSI_OVERBOUGHT:             "45"
+          VOLUME_SPIKE_MULT:          "1.5"
+          ADX_PERIOD:                 "14"
+          ADX_THRESHOLD:              "20"
+          NIFTY_ADX_THRESHOLD:        "25"
+          BANKNIFTY_ADX_THRESHOLD:    "25"
+          SENSEX_ADX_THRESHOLD:       "20"
+          PDH_PROXIMITY_PCT:          "0.005"
+          PDH_MIN_RANGE_PCT:          "0.005"
+          FIB_PROXIMITY_PCT:          "0.15"
+          FIB_MIN_SWING_PCT:          "0.50"
+          VWAP_ZONE_PCT:              "0.15"
+          MAX_DAILY_TRADES:           "1"
+          MAX_DAILY_TRADES_OTM:       "2"
+          PCR_MIN:                    "0.6"
+          PCR_MAX:                    "1.5"
+          PCR_BULL_MIN:               "1.1"
+          PCR_BEAR_MAX:               "0.7"
+          VIX_MAX:                    "20.0"
+          STRONG_SIGNAL_THRESHOLD:    "5"
+          OTM_STRIKES_AWAY:           "1"
+          ENABLE_OPTION_SELLING:      "False"
+          WEAK_SIGNAL_THRESHOLD:      "3"
+          STRIKE_TYPE:                "ATM"
+          PRODUCT_TYPE:               "MIS"
+          NIFTY_LOT_SIZE:             "50"
+          BANKNIFTY_LOT_SIZE:         "15"
+          SENSEX_LOT_SIZE:            "10"
+          NIFTY_STRIKE_STEP:          "50"
+          BANKNIFTY_STRIKE_STEP:      "100"
+          SENSEX_STRIKE_STEP:         "100"
+          DATABASE_PORT:              "5432"
+          ML_MIN_CONFIDENCE:          "0.65"
+          ML_MODEL_PATH:              "ml/models/xgboost_model.pkl"
+          LOG_LEVEL:                  "INFO"
+          DASHBOARD_PORT:             "8501"
+          DASHBOARD_REFRESH:          "5"
+          OI_FETCH_INTERVAL:          "60"
+          REPORTS_DIR:                "reports"
+          BACKTEST_START:             "2023-01-01"
+          BACKTEST_END:               "2024-12-31"
+          BACKTEST_VIX:               "15.0"
+        run: python main.py --candle
+
+      - name: Commit state and logs
+        run: |
+          git config user.name "Trading Bot"
+          git config user.email "bot@noreply.github.com"
+          git add state.json logs/trade_log.csv logs/signal_log.csv reports/ || true
+          git diff --staged --quiet || git commit -m "candle: $(TZ='Asia/Kolkata' date '+%Y-%m-%d %H:%M IST')"
+          git push
+        continue-on-error: true

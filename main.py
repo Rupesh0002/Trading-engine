@@ -3,7 +3,8 @@
 Trading Engine — entry point.
 
 Usage:
-  python main.py                → run live scheduler (paper mode by default)
+  python main.py                → run live scheduler (local / paper mode)
+  python main.py --candle       → run one candle check and exit (GitHub Actions)
   python main.py --backtest     → run 4-month backtest using backtest/engine.py
   python main.py --status       → print today's trades from logs/trade_log.csv
   python main.py --summary      → print full trade stats from logs/trade_log.csv
@@ -52,6 +53,10 @@ def main() -> None:
     parser.add_argument("--to",    dest="to_date",   default=None, help="Backtest end   YYYY-MM-DD")
     parser.add_argument("--index", dest="index",     default=ACTIVE_INDEX, help="Index to backtest")
     parser.add_argument(
+        "--candle", action="store_true",
+        help="Run one candle check and exit (GitHub Actions per-candle mode)",
+    )
+    parser.add_argument(
         "--status", action="store_true",
         help="Print today's trades from trade log",
     )
@@ -61,7 +66,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.backtest:
+    if args.candle:
+        _run_candle()
+    elif args.backtest:
         _run_backtest(
             from_date=args.from_date or BACKTEST_START,
             to_date=args.to_date     or BACKTEST_END,
@@ -73,6 +80,20 @@ def main() -> None:
         _show_summary()
     else:
         _run_scheduler()
+
+
+# ── Candle mode (GitHub Actions) ──────────────────────────────────────────────
+
+def _run_candle() -> None:
+    """
+    Single-candle execution for GitHub Actions per-candle mode.
+    Loads state.json → checks one candle → saves state.json → exits.
+    """
+    validate_settings()
+    from config.auth import get_kite_client
+    kite = get_kite_client()
+    from scheduler import TradingScheduler
+    TradingScheduler(kite).run_once()
 
 
 # ── Scheduler (default mode) ───────────────────────────────────────────────────

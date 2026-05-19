@@ -764,6 +764,126 @@ class TradingScheduler:
         t.start()
         logger.info("EOD ML retraining scheduled in background (trades today: %d).", trades_today)
 
+    # ──────────────────────────────────────────────────────────────────────
+    # Single-candle mode (GitHub Actions)
+    # ──────────────────────────────────────────────────────────────────────
+
+    _STATE_FILE = "state.json"
+
+    def run_once(self) -> None:
+        """
+        Load state → run one candle action → save state → exit.
+        Called by: python main.py --candle  (GitHub Actions per-candle mode)
+        """
+        now = datetime.now(IST)
+
+        if now.weekday() >= 5:
+            logger.info("Weekend — no action.")
+            return
+
+        today = now.date()
+        self._load_state(today)
+
+        hour_min = now.hour * 60 + now.minute
+
+        if 9 * 60 <= hour_min < 9 * 60 + 30:
+            logger.info("── Morning Setup (candle mode) ── %s", ist_now_str())
+            self._morning_setup()
+
+        elif 10 * 60 <= hour_min < 15 * 60:
+            self._candle_cycle()
+
+        elif 15 * 60 <= hour_min < 15 * 60 + 30:
+            self._hard_close()
+            self.open_positions.clear()
+            self.risk_manager.open_positions = 0
+            self._day_summary()
+
+        else:
+            logger.info(
+                "Outside trading window (%02d:%02d IST) — no action.",
+                now.hour, now.minute,
+            )
+
+        self._save_state(today)
+
+    def _load_state(self, today) -> None:
+        """Load session state from state.json. Resets automatically on a new day."""
+        if not os.path.exists(self._STATE_FILE):
+            logger.info("No state file — starting fresh.")
+            self._reset_day()
+            return
+
+        try:
+            with open(self._STATE_FILE) as f:
+                s = json.load(f)
+
+            if s.get("date") != str(today):
+                logger.info("New trading day — resetting state.")
+                self._reset_day()
+                return
+
+            self.running_capital          = float(s.get("running_capital", TRADING_CAPITAL))
+            self.daily_trades             = s.get("daily_trades", {idx: 0 for idx in ACTIVE_INDICES})
+            self.directions_traded_today  = set(s.get("directions_traded_today", []))
+            self.profit_lock_done         = bool(s.get("profit_lock_done", False))
+            self.morning_pcr              = s.get("morning_pcr", {})
+
+            try:
+                self.risk_manager._daily_pnl = float(s.get("daily_pnl", 0.0))
+            except AttributeError:
+                pass
+
+            positions = []
+            for p in s.get("open_positions", []):
+                if isinstance(p.get("entry_time"), str):
+                    try:
+                        p["entry_time"] = datetime.fromisoformat(p["entry_time"])
+                        if p["entry_time"].tzinfo is None:
+                            p["entry_time"] = IST.localize(p["entry_time"])
+                    except Exception:
+                        p["entry_time"] = datetime.now(IST)
+                positions.append(p)
+            self.open_positions = positions
+            self.risk_manager.open_positions = len(positions)
+
+            logger.info(
+                "State loaded: date=%s | open=%d | daily_pnl=₹%.2f | capital=₹%.0f",
+                today, len(self.open_positions),
+                self.risk_manager.daily_pnl, self.running_capital,
+            )
+
+        except Exception as exc:
+            logger.warning("State load failed: %s — starting fresh.", exc)
+            self._reset_day()
+
+    def _save_state(self, today) -> None:
+        """Persist session state to state.json for the next candle run."""
+        try:
+            positions = []
+            for pos in self.open_positions:
+                p = dict(pos)
+                if isinstance(p.get("entry_time"), datetime):
+                    p["entry_time"] = p["entry_time"].isoformat()
+                positions.append(p)
+
+            state = {
+                "date":                    str(today),
+                "running_capital":         round(self.running_capital, 2),
+                "daily_pnl":               round(self.risk_manager.daily_pnl, 2),
+                "daily_trades":            self.daily_trades,
+                "directions_traded_today": list(self.directions_traded_today),
+                "profit_lock_done":        self.profit_lock_done,
+                "morning_pcr":             self.morning_pcr,
+                "open_positions":          positions,
+            }
+            with open(self._STATE_FILE, "w") as f:
+                json.dump(state, f, indent=2, default=str)
+            logger.info("State saved → %s", self._STATE_FILE)
+
+        except Exception as exc:
+            logger.warning("State save failed: %s", exc)
+
     def _reset_day(self) -> None:
         self.risk_manager.reset_daily()
         self.open_positions.clear()
