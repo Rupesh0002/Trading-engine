@@ -107,8 +107,14 @@ def send_trade_entered(
     arrow  = "🟢" if direction == "CALL" else "🔴"
     mode   = "📄 PAPER" if paper else "💰 LIVE"
     opt    = "CE" if direction == "CALL" else "PE"
-    tier_tag = {"strong": "★ Strong", "normal": "✓ Normal", "weak": "~ Cautious"}.get(ml_tier, "")
-    conf_str = f"  [{tier_tag}  ML={ml_conf:.2f}]" if ml_conf else ""
+    tier_labels = {
+        "strong":          "★ Strong",
+        "normal":          "✓ Normal",
+        "weak":            "~ Cautious (half size)",
+        "indicators_only": "○ Inactive — training",
+    }
+    tier_tag = tier_labels.get(ml_tier, "")
+    conf_str = f" ML={ml_conf:.2f}" if (ml_conf and ml_tier != "indicators_only") else ""
     _send(
         f"{arrow} <b>Trade Entered — {index} {direction}</b>  [{mode}]\n"
         f"Symbol  : {index}{expiry}{strike}{opt}\n"
@@ -116,7 +122,7 @@ def send_trade_entered(
         f"Premium : ₹{premium:.2f}\n"
         f"SL      : ₹{sl:.2f}\n"
         f"Target  : ₹{target:.2f}\n"
-        f"ML      :{conf_str}\n"
+        f"ML      : {tier_tag}{conf_str}\n"
         f"──────────────────"
     )
 

@@ -494,7 +494,12 @@ class TradingScheduler:
             logger.info("[%s] Position size 0 for premium=%.2f — skip.", index, premium)
             return
 
-        # ML + Adaptive confidence gate
+        # ── ML gate (indicators-only until model is trained enough) ──────────
+        # ML activates automatically when CV AUC >= ML_ACTIVATE_AUC (0.65).
+        # Until then: compute scores for logging/Telegram only — zero effect on trade.
+        _ML_ACTIVATE_AUC  = 0.65   # minimum AUC before ML influences any decision
+        _ML_REDUCE_THRESHOLD = 0.50
+
         from datetime import date as _date2
         dte = max((expiry - _date2.today()).days, 1)
         signal_details = {**result.details, "conditions_met": result.conditions_met}
@@ -511,33 +516,48 @@ class TradingScheduler:
             index, result.direction, signal_details, dte,
             datetime.now(IST).hour, ml_conf,
         )
-        # ── ML confidence tier ─────────────────────────────────────────────
-        # ML_MIN_CONFIDENCE = hard-block floor (adaptive hard-block / proven loser).
-        # Indicators passed 4/5 → always trade UNLESS the pattern is a proven loser.
-        # Uncertain ML (0.30–0.50) → half position, not a skip.
-        # Strong ML (≥ 0.50)      → full position.
-        _ML_REDUCE_THRESHOLD = 0.50   # below this: half position
-        if blended_conf < ML_MIN_CONFIDENCE:
-            logger.info(
-                "[%s] ML+Adaptive BLOCK: confidence=%.2f — proven loser pattern | %s",
-                index, blended_conf, adaptive_reason,
-            )
-            self.shadow_signals_today += 1
-            return
 
-        ml_tier = "strong" if blended_conf >= 0.60 else (
-                  "normal" if blended_conf >= _ML_REDUCE_THRESHOLD else "weak")
+        # Check if model has been trained enough to influence decisions
+        _current_auc = 0.0
+        try:
+            import json as _j
+            _meta_path = os.path.join("ml", "models", "model_metadata.json")
+            if os.path.exists(_meta_path):
+                with open(_meta_path) as _f:
+                    _current_auc = float(_j.load(_f).get("cv_auc", 0))
+        except Exception:
+            pass
 
-        if ml_tier == "weak":
-            # Indicators say YES, ML is uncertain — trade at half size with caution.
-            # Never fully block a clean indicator signal just because ML lacks history.
-            lot_size = INDEX_CONFIG[index]["lot_size"]
-            lots     = max(lots // 2, 1)
-            quantity = lots * lot_size
+        _ml_active = _current_auc >= _ML_ACTIVATE_AUC
+
+        if not _ml_active:
+            # Model not trained enough — indicators decide, ML is observer only
+            ml_tier = "indicators_only"
             logger.info(
-                "[%s] ML uncertain (%.2f) — indicators valid, entering at half position | %s",
-                index, blended_conf, adaptive_reason,
+                "[%s] ML inactive (AUC %.3f < %.2f) — trading on indicators only.",
+                index, _current_auc, _ML_ACTIVATE_AUC,
             )
+        else:
+            # Model trained — apply tier logic
+            if blended_conf < ML_MIN_CONFIDENCE:
+                logger.info(
+                    "[%s] ML+Adaptive BLOCK: confidence=%.2f — proven loser pattern | %s",
+                    index, blended_conf, adaptive_reason,
+                )
+                self.shadow_signals_today += 1
+                return
+
+            ml_tier = "strong" if blended_conf >= 0.60 else (
+                      "normal" if blended_conf >= _ML_REDUCE_THRESHOLD else "weak")
+
+            if ml_tier == "weak":
+                lot_size = INDEX_CONFIG[index]["lot_size"]
+                lots     = max(lots // 2, 1)
+                quantity = lots * lot_size
+                logger.info(
+                    "[%s] ML uncertain (%.2f) — half position | %s",
+                    index, blended_conf, adaptive_reason,
+                )
 
         ml_conf = blended_conf
 
