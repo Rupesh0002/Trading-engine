@@ -1,0 +1,227 @@
+{
+  "BANKNIFTY|PUT|moderate|bear|near|afternoon": {
+    "wins": 7,
+    "losses": 3,
+    "total_pnl": 10356.9
+  },
+  "BANKNIFTY|CALL|moderate|neutral|expiry|afternoon": {
+    "wins": 2,
+    "losses": 1,
+    "total_pnl": -322.8
+  },
+  "BANKNIFTY|CALL|moderate|bull|expiry|afternoon": {
+    "wins": 3,
+    "losses": 2,
+    "total_pnl": -497.85
+  },
+  "BANKNIFTY|PUT|moderate|neutral|near|afternoon": {
+    "wins": 4,
+    "losses": 1,
+    "total_pnl": 9746.4
+  },
+  "BANKNIFTY|PUT|moderate|bear|expiry|afternoon": {
+    "wins": 2,
+    "losses": 6,
+    "total_pnl": -14887.95
+  },
+  "BANKNIFTY|CALL|moderate|bull|near|afternoon": {
+    "wins": 5,
+    "losses": 2,
+    "total_pnl": 7601.1
+  },
+  "BANKNIFTY|CALL|flat|bull|expiry|afternoon": {
+    "wins": 7,
+    "losses": 13,
+    "total_pnl": -12780.75
+  },
+  "BANKNIFTY|PUT|strong|bear|expiry|afternoon": {
+    "wins": 1,
+    "losses": 2,
+    "total_pnl": -6899.4
+  },
+  "BANKNIFTY|PUT|flat|bear|expiry|afternoon": {
+    "wins": 2,
+    "losses": 9,
+    "total_pnl": -18644.4
+  },
+  "BANKNIFTY|PUT|flat|bear|near|afternoon": {
+    "wins": 3,
+    "losses": 4,
+    "total_pnl": 3096.0
+  },
+  "BANKNIFTY|CALL|flat|neutral|expiry|afternoon": {
+    "wins": 2,
+    "losses": 1,
+    "total_pnl": 1574.55
+  },
+  "BANKNIFTY|PUT|flat|neutral|expiry|afternoon": {
+    "wins": 0,
+    "losses": 1,
+    "total_pnl": -2621.25
+  },
+  "BANKNIFTY|CALL|flat|bull|near|afternoon": {
+    "wins": 6,
+    "losses": 0,
+    "total_pnl": 7653.45
+  },
+  "BANKNIFTY|PUT|flat|neutral|near|afternoon": {
+    "wins": 0,
+    "losses": 1,
+    "total_pnl": -1358.7
+  },
+  "BANKNIFTY|PUT|moderate|neutral|expiry|afternoon": {
+    "wins": 1,
+    "losses": 0,
+    "total_pnl": 2137.5
+  },
+  "BANKNIFTY|CALL|strong|bull|expiry|afternoon": {
+    "wins": 1,
+    "losses": 1,
+    "total_pnl": 2886.3
+  },
+  "NIFTY|CALL|moderate|bull|near|afternoon": {
+    "wins": 7,
+    "losses": 2,
+    "total_pnl": 13657.5
+  },
+  "NIFTY|PUT|strong|bear|near|afternoon": {
+    "wins": 1,
+    "losses": 2,
+    "total_pnl": -3523.0
+  },
+  "NIFTY|PUT|moderate|bear|expiry|afternoon": {
+    "wins": 5,
+    "losses": 4,
+    "total_pnl": -3068.5
+  },
+  "NIFTY|PUT|moderate|neutral|expiry|afternoon": {
+    "wins": 1,
+    "losses": 0,
+    "total_pnl": 2346.0
+  },
+  "NIFTY|PUT|moderate|bear|near|afternoon": {
+    "wins": 9,
+    "losses": 2,
+    "total_pnl": 7146.5
+  },
+  "NIFTY|PUT|strong|bear|expiry|afternoon": {
+    "wins": 2,
+    "losses": 0,
+    "total_pnl": 4317.0
+  },
+  "NIFTY|CALL|moderate|bull|expiry|afternoon": {
+    "wins": 6,
+    "losses": 3,
+    "total_pnl": -2679.0
+  },
+  "NIFTY|PUT|strong|neutral|expiry|afternoon": {
+    "wins": 1,
+    "losses": 0,
+    "total_pnl": 6918.0
+  },
+  "NIFTY|PUT|strong|neutral|near|afternoon": {
+    "wins": 2,
+    "losses": 0,
+    "total_pnl": 1932.5
+  },
+  "NIFTY|CALL|strong|neutral|near|afternoon": {
+    "wins": 2,
+    "losses": 0,
+    "total_pnl": 9772.0
+  },
+  "NIFTY|CALL|flat|bull|expiry|afternoon": {
+    "wins": 3,
+    "losses": 1,
+    "total_pnl": 8404.0
+  },
+  "NIFTY|CALL|flat|bull|near|afternoon": {
+    "wins": 4,
+    "losses": 5,
+    "total_pnl": -1216.5
+  },
+  "NIFTY|PUT|flat|bear|expiry|afternoon": {
+    "wins": 2,
+    "losses": 3,
+    "total_pnl": -4462.0
+  },
+  "NIFTY|PUT|flat|bear|near|afternoon": {
+    "wins": 2,
+    "losses": 3,
+    "total_pnl": -368.0
+  },
+  "NIFTY|CALL|strong|bull|near|afternoon": {
+    "wins": 0,
+    "losses": 3,
+    "total_pnl": -5086.5
+  },
+  "NIFTY|CALL|strong|bull|expiry|afternoon": {
+    "wins": 1,
+    "losses": 0,
+    "total_pnl": 577.0
+  },
+  "NIFTY|CALL|moderate|neutral|near|afternoon": {
+    "wins": 1,
+    "losses": 0,
+    "total_pnl": 536.5
+  },
+  "SENSEX|CALL|moderate|bull|near|afternoon": {
+    "wins": 5,
+    "losses": 0,
+    "total_pnl": 4318.4
+  },
+  "SENSEX|PUT|strong|bear|expiry|afternoon": {
+    "wins": 2,
+    "losses": 0,
+    "total_pnl": 4607.5
+  },
+  "SENSEX|PUT|moderate|bear|near|afternoon": {
+    "wins": 2,
+    "losses": 1,
+    "total_pnl": 1991.0
+  },
+  "SENSEX|PUT|moderate|bear|expiry|afternoon": {
+    "wins": 0,
+    "losses": 3,
+    "total_pnl": -12239.4
+  },
+  "SENSEX|CALL|strong|bull|expiry|afternoon": {
+    "wins": 2,
+    "losses": 1,
+    "total_pnl": 6897.0
+  },
+  "SENSEX|PUT|flat|bear|expiry|afternoon": {
+    "wins": 3,
+    "losses": 1,
+    "total_pnl": 3593.3
+  },
+  "SENSEX|CALL|moderate|bull|expiry|afternoon": {
+    "wins": 3,
+    "losses": 3,
+    "total_pnl": -2753.9
+  },
+  "SENSEX|CALL|flat|neutral|near|afternoon": {
+    "wins": 0,
+    "losses": 1,
+    "total_pnl": -1044.5
+  },
+  "SENSEX|PUT|strong|bear|near|afternoon": {
+    "wins": 1,
+    "losses": 1,
+    "total_pnl": 321.9
+  },
+  "SENSEX|CALL|flat|bull|near|afternoon": {
+    "wins": 4,
+    "losses": 0,
+    "total_pnl": 11350.3
+  },
+  "SENSEX|PUT|flat|bear|near|afternoon": {
+    "wins": 2,
+    "losses": 1,
+    "total_pnl": -235.2
+  },
+  "SENSEX|CALL|flat|bull|expiry|afternoon": {
+    "wins": 4,
+    "losses": 1,
+    "total_pnl": 126.7
+  }
+}

@@ -5,5 +5,4 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
-ml/models/
 *.pkl
