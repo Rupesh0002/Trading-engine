@@ -183,18 +183,33 @@ def send_day_summary(
     paper: bool = True,
     ml_auc: float = None,
     shadow_count: int = 0,
+    drift_line: str = "",
 ) -> None:
     """15:30 — end-of-day summary."""
     sign = "📈" if pnl >= 0 else "📉"
     mode = "📄 PAPER" if paper else "💰 LIVE"
     auc_line = f"ML AUC  : {ml_auc:.3f}" if ml_auc else "ML AUC  : n/a"
-    _send(
+    body = (
         f"{sign} <b>Day Summary</b>  [{mode}]\n"
         f"Trades  : {trades}\n"
         f"P&L     : ₹{pnl:+,.2f}\n"
         f"Capital : ₹{capital:,.0f}\n"
         f"{auc_line}\n"
         f"Shadows : {shadow_count}\n"
+    )
+    if drift_line:
+        body += f"{drift_line}\n"
+    body += "──────────────────"
+    _send(body)
+
+
+def send_ml_conflict(index: str, xgb: float, mem: float) -> None:
+    """XGBoost and adaptive memory scores conflict — engine deferred to memory."""
+    _send(
+        f"⚠️ <b>ML Conflict — {index}</b>\n"
+        f"XGB     : {xgb:.2f}\n"
+        f"Memory  : {mem:.2f}\n"
+        f"Action  : Deferring to memory · half size\n"
         f"──────────────────"
     )
 

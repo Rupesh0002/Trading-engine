@@ -119,11 +119,12 @@ def train(csv_paths: list[str]) -> None:
     import json as _json
     from datetime import datetime as _dt
     metadata = {
-        "cv_auc":      round(float(scores.mean()), 4),
-        "cv_auc_std":  round(float(scores.std()), 4),
-        "n_samples":   int(len(y)),
-        "n_features":  int(len(FEATURE_COLS)),
-        "trained_at":  _dt.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "cv_auc":          round(float(scores.mean()), 4),
+        "cv_auc_std":      round(float(scores.std()), 4),
+        "n_samples":       int(len(y)),
+        "n_features":      int(len(FEATURE_COLS)),
+        "trained_at":      _dt.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "train_win_rate":  round(float(y.mean()), 4),
     }
     with open(os.path.join(MODEL_DIR, "model_metadata.json"), "w") as f:
         _json.dump(metadata, f, indent=2)

@@ -256,17 +256,22 @@ class AdaptiveMemory:
         dte: int,
         entry_hour: int,
         ml_confidence: float,
-    ) -> Tuple[float, str]:
+    ) -> Tuple[float, Optional[float], str]:
         """
         Blend XGBoost ML confidence with historical pattern win-rate.
 
         Returns:
-          (final_confidence, reason_string)
+          (final_confidence, raw_memory_score, reason_string)
+
+          raw_memory_score = win_rate from pattern memory bucket:
+            None  — fewer than MIN_SAMPLES trades in this bucket (no memory yet)
+            0.0   — hard-blocked (win_rate < HARD_BLOCK_WR)
+            float — actual win_rate used for blending
 
         Logic:
-          - count <  MIN_SAMPLES : return ml_confidence unchanged
-          - win_rate < HARD_BLOCK: return 0.0 (hard block)
-          - else                 : blend = (1-w)*ml + w*win_rate
+          - count <  MIN_SAMPLES : return ml_confidence unchanged, raw=None
+          - win_rate < HARD_BLOCK: return 0.0, raw=win_rate
+          - else                 : blend = (1-w)*ml + w*win_rate, raw=win_rate
             where w grows from 0.20 (5 samples) to MAX_BLEND_W (20+ samples)
         """
         adx  = float(signal_details.get("adx") or 0)
@@ -279,7 +284,7 @@ class AdaptiveMemory:
             reason = (
                 f"pattern memory: {count}/{_MIN_SAMPLES} samples — ML only ({ml_confidence:.2f})"
             )
-            return ml_confidence, reason
+            return ml_confidence, None, reason
 
         win_rate = stats["win_rate"]
 
@@ -291,7 +296,7 @@ class AdaptiveMemory:
                 f"Threshold: {_HARD_BLOCK_WR:.0%}"
             )
             logger.warning("[ADAPTIVE] %s", reason)
-            return 0.0, reason
+            return 0.0, win_rate, reason
 
         # Blend weight grows with sample count: 5→20%, 20+→50%
         blend_w = min(_MAX_BLEND_W, 0.10 + 0.02 * count)
@@ -304,7 +309,7 @@ class AdaptiveMemory:
             f"(w={blend_w:.0%}) → combined={combined:.2f}"
         )
         logger.debug("[ADAPTIVE] %s", reason)
-        return combined, reason
+        return combined, win_rate, reason
 
     # ── Near-miss detection ───────────────────────────────────────────────
 

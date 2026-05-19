@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import csv
 import glob
+import json
 import logging
 import os
 import threading
@@ -93,6 +94,7 @@ class TradingScheduler:
         self.directions_traded_today: set = set()   # global CALL/PUT cap across all indices
         self.profit_lock_done: bool = False          # 2 PM profit lock fires once per day
         self.shadow_signals_today: int = 0          # signals evaluated but not traded today
+        self.ml_override_trades_today: int = 0      # ML-override trades placed today
         self.running_capital = TRADING_CAPITAL
         self._today: Optional[date] = None
 
@@ -252,6 +254,45 @@ class TradingScheduler:
         except Exception:
             pass
 
+        # ── Drift detection: compare live 7-day win rate vs model expected ──────
+        drift_line = ""
+        try:
+            import pandas as _pd
+            from datetime import timedelta as _td
+            _trades_csv = "trades_log.csv"
+            if os.path.exists(_trades_csv):
+                _df = _pd.read_csv(_trades_csv)
+                if "date" in _df.columns and "result" in _df.columns:
+                    _df["_dt"]  = _pd.to_datetime(_df["date"], errors="coerce")
+                    _cutoff     = _pd.Timestamp.now() - _td(days=7)
+                    _recent     = _df[_df["_dt"] >= _cutoff]
+                    _closed     = _recent[_recent["result"].isin(["WIN", "LOSS"])]
+                    if len(_closed) >= 3:
+                        _live_wr = float((_closed["result"] == "WIN").sum()) / len(_closed)
+                        _exp_wr: Optional[float] = None
+                        try:
+                            _meta_path = os.path.join("ml", "models", "model_metadata.json")
+                            if os.path.exists(_meta_path):
+                                with open(_meta_path) as _mf:
+                                    _exp_wr = float(
+                                        _json.load(_mf).get("train_win_rate", 0)
+                                    ) or None
+                        except Exception:
+                            pass
+                        if _exp_wr:
+                            if _live_wr < _exp_wr - 0.15:
+                                drift_line = (
+                                    f"🚨 Model drift: live {_live_wr:.0%} "
+                                    f"vs expected {_exp_wr:.0%} — retrain recommended"
+                                )
+                            else:
+                                drift_line = (
+                                    f"✓ Model tracking: live {_live_wr:.0%} "
+                                    f"vs expected {_exp_wr:.0%}"
+                                )
+        except Exception as _drift_exc:
+            logger.debug("Drift detection error: %s", _drift_exc)
+
         lines = [
             "─" * 50,
             f"  DAY SUMMARY  {ist_now_str()}",
@@ -261,8 +302,10 @@ class TradingScheduler:
             f"  Mode         : {'PAPER' if PAPER_MODE else 'LIVE'}",
             f"  ML AUC       : {ml_auc:.3f}" if ml_auc else "  ML AUC       : n/a",
             f"  Shadow sigs  : {self.shadow_signals_today}",
-            "─" * 50,
         ]
+        if drift_line:
+            lines.append(f"  {drift_line}")
+        lines.append("─" * 50)
         for line in lines:
             logger.info(line)
 
@@ -274,6 +317,7 @@ class TradingScheduler:
                 paper=PAPER_MODE,
                 ml_auc=ml_auc,
                 shadow_count=self.shadow_signals_today,
+                drift_line=drift_line,
             )
 
         # Retrain ML model (sync in candle/Actions mode, background in scheduler mode)
@@ -420,11 +464,36 @@ class TradingScheduler:
                     self.adaptive.check_near_miss(index, result.details, _dte_nm, now_ist.hour)
                 except Exception as _e:
                     logger.debug("Near-miss check [%s]: %s", index, _e)
-                continue
 
-            # Soft cap: 2nd trade only for 5/5 signals
+                # ML override: AUC ≥ 0.72 may fire on exactly 3/5 signals in 10:00–12:30
+                import types as _types
+                _override_dir = self._get_ml_override_direction(index, result, now_ist)
+                if _override_dir is None:
+                    continue
+                logger.info(
+                    "[%s] ML OVERRIDE: 3/5 conditions → direction=%s (AUC gate passed)",
+                    index, _override_dir,
+                )
+                result = _types.SimpleNamespace(
+                    direction=_override_dir,
+                    conditions_met=result.conditions_met,
+                    details={**result.details, "ml_override": True},
+                )
+                if send_signal_fired:
+                    send_signal_fired(
+                        index=index,
+                        direction=_override_dir,
+                        conditions=result.conditions_met,
+                        adx=result.details.get("adx", 0),
+                        rsi=result.details.get("rsi", 0),
+                        fib_level=result.details.get("fib_label", ""),
+                        paper=PAPER_MODE,
+                    )
+
+            # Soft cap: 2nd trade only for 5/5 signals (ML override has own counter — bypasses)
             if (self.daily_trades.get(index, 0) >= MAX_DAILY_TRADES
-                    and result.conditions_met < STRONG_SIGNAL_THRESHOLD):
+                    and result.conditions_met < STRONG_SIGNAL_THRESHOLD
+                    and not result.details.get("ml_override", False)):
                 logger.info(
                     "[%s] Daily trade limit (%d). 2nd trade requires 5/5 signal (got %d/5).",
                     index, MAX_DAILY_TRADES, result.conditions_met,
@@ -450,6 +519,7 @@ class TradingScheduler:
                     "spot":           spot,
                     "pcr":            pcr,
                     "conditions_met": result.conditions_met,
+                    "ml_override":    result.details.get("ml_override", False),
                 }
 
         # ── Enter best trade ────────────────────────────────────────────────
@@ -497,14 +567,14 @@ class TradingScheduler:
         # ── ML gate (indicators-only until model is trained enough) ──────────
         # ML activates automatically when CV AUC >= ML_ACTIVATE_AUC (0.65).
         # Until then: compute scores for logging/Telegram only — zero effect on trade.
-        _ML_ACTIVATE_AUC  = 0.65   # minimum AUC before ML influences any decision
+        _ML_ACTIVATE_AUC     = 0.65   # minimum AUC before ML influences any decision
         _ML_REDUCE_THRESHOLD = 0.50
 
         from datetime import date as _date2
         dte = max((expiry - _date2.today()).days, 1)
         signal_details = {**result.details, "conditions_met": result.conditions_met}
         entry_time_str = datetime.now(IST).strftime("%H:%M:%S")
-        ml_conf = self.ml_predictor.confidence(
+        xgb_score = self.ml_predictor.confidence(
             signal_details=signal_details,
             spot=spot,
             vix=vix,
@@ -512,10 +582,34 @@ class TradingScheduler:
             dte=dte,
             entry_time_str=entry_time_str,
         )
-        blended_conf, adaptive_reason = self.adaptive.score(
+        blended_conf, raw_mem_score, adaptive_reason = self.adaptive.score(
             index, result.direction, signal_details, dte,
-            datetime.now(IST).hour, ml_conf,
+            datetime.now(IST).hour, xgb_score,
         )
+
+        # ── Conflict detection: XGBoost vs pattern memory ────────────────────
+        # When the two sources disagree by > 0.35, defer to the memory-based
+        # score (it has seen real outcomes) and reduce to half position.
+        _reduce_size = False
+        if raw_mem_score is not None and abs(xgb_score - raw_mem_score) > 0.35:
+            logger.warning(
+                "[%s] ML CONFLICT — XGB=%.2f MEM=%.2f (diff=%.2f) → deferring to memory",
+                index, xgb_score, raw_mem_score, abs(xgb_score - raw_mem_score),
+            )
+            blended_conf = raw_mem_score
+            _reduce_size = True
+            self.trade_logger.log_signal({
+                "index":       index,
+                "direction":   result.direction,
+                "details":     result.details,
+                "fired":       True,
+                "skip_reason": f"CONFLICT XGB={xgb_score:.2f} MEM={raw_mem_score:.2f}",
+            })
+            try:
+                from telegram_alerts import send_ml_conflict as _send_conflict
+                _send_conflict(index, xgb_score, raw_mem_score)
+            except Exception:
+                pass
 
         # Check if model has been trained enough to influence decisions
         _current_auc = 0.0
@@ -551,15 +645,31 @@ class TradingScheduler:
                       "normal" if blended_conf >= _ML_REDUCE_THRESHOLD else "weak")
 
             if ml_tier == "weak":
-                lot_size = INDEX_CONFIG[index]["lot_size"]
-                lots     = max(lots // 2, 1)
-                quantity = lots * lot_size
+                _reduce_size = True
                 logger.info(
                     "[%s] ML uncertain (%.2f) — half position | %s",
                     index, blended_conf, adaptive_reason,
                 )
 
+        # Apply size reduction (conflict OR weak ML tier — only once even if both)
+        if _reduce_size:
+            lot_size = INDEX_CONFIG[index]["lot_size"]
+            lots     = max(lots // 2, 1)
+            quantity = lots * lot_size
+
         ml_conf = blended_conf
+
+        # ── ML override counter ───────────────────────────────────────────────
+        is_ml_override = best.get("ml_override", False)
+        if is_ml_override:
+            self.ml_override_trades_today += 1
+            trade_type = "ML_OVERRIDE"
+            logger.info(
+                "[%s] ML override trade #%d placed today.",
+                index, self.ml_override_trades_today,
+            )
+        else:
+            trade_type = "NORMAL"
 
         levels     = self.risk_manager.compute_exit_levels(premium, conditions_met=score)
         _BROKERAGE = 40.0
@@ -601,6 +711,7 @@ class TradingScheduler:
             "pcr_bias":      self._pcr_bias_label(best["pcr"]),
             "ml_tier":       ml_tier,
             "ml_conf":       round(blended_conf, 3),
+            "trade_type":    trade_type,
             # stored for ML CSV logging on close
             "signal_details": d,
             "actual_risk":   actual_risk,
@@ -636,6 +747,7 @@ class TradingScheduler:
             "rsi":            d.get("rsi"),
             "fib_level":      d.get("fib_level"),
             "pcr_bias":       self._pcr_bias_label(best["pcr"]),
+            "trade_type":     trade_type,
             "paper":          PAPER_MODE,
         })
 
@@ -902,6 +1014,7 @@ class TradingScheduler:
             self.profit_lock_done         = bool(s.get("profit_lock_done", False))
             self.morning_pcr              = s.get("morning_pcr", {})
             self.shadow_signals_today     = int(s.get("shadow_signals_today", 0))
+            self.ml_override_trades_today = int(s.get("ml_override_trades_today", 0))
 
             try:
                 self.risk_manager._daily_pnl = float(s.get("daily_pnl", 0.0))
@@ -950,7 +1063,8 @@ class TradingScheduler:
                 "profit_lock_done":        self.profit_lock_done,
                 "morning_pcr":             self.morning_pcr,
                 "open_positions":          positions,
-                "shadow_signals_today":    self.shadow_signals_today,
+                "shadow_signals_today":      self.shadow_signals_today,
+                "ml_override_trades_today": self.ml_override_trades_today,
             }
             with open(self._STATE_FILE, "w") as f:
                 json.dump(state, f, indent=2, default=str)
@@ -967,6 +1081,7 @@ class TradingScheduler:
         self.directions_traded_today = set()
         self.profit_lock_done = False
         self.shadow_signals_today = 0
+        self.ml_override_trades_today = 0
         logger.info("New trading day — session state reset.")
 
     def _get_daily_candle(self, index: str, day) -> Optional[Dict]:
@@ -987,6 +1102,63 @@ class TradingScheduler:
         except Exception as exc:
             logger.debug("Daily candle fetch failed [%s %s]: %s", index, day, exc)
             return None
+
+    def _get_ml_override_direction(
+        self, index: str, result, now_ist
+    ) -> Optional[str]:
+        """
+        Returns a direction string ("CALL" or "PUT") when all ML-override
+        conditions are satisfied, otherwise None.
+
+        Requirements:
+          - Exactly MIN_CONDITIONS-1 (3/5) conditions met
+          - CV AUC >= 0.72 (well-trained model required)
+          - Time window 10:00–12:30 IST only
+          - Not expiry day (Thu for NIFTY, Wed for BANKNIFTY)
+          - ml_override_trades_today == 0  (one override per day max)
+          - Unambiguous direction from call_score / put_score
+        """
+        if result.conditions_met != MIN_CONDITIONS - 1:
+            return None
+
+        # AUC gate
+        _ML_OVERRIDE_AUC = 0.72
+        try:
+            _meta_path = os.path.join("ml", "models", "model_metadata.json")
+            if not os.path.exists(_meta_path):
+                return None
+            with open(_meta_path) as _f:
+                _auc = float(json.load(_f).get("cv_auc", 0))
+        except Exception:
+            return None
+        if _auc < _ML_OVERRIDE_AUC:
+            return None
+
+        # Time window: 10:00–12:30 IST
+        hour_min = now_ist.hour * 60 + now_ist.minute
+        if not (10 * 60 <= hour_min < 12 * 60 + 30):
+            return None
+
+        # Skip expiry day (weekly expiry kills time value fast)
+        _EXPIRY_WEEKDAY = {"NIFTY": 3, "BANKNIFTY": 2}  # Thu=3, Wed=2 (Mon=0)
+        exp_day = _EXPIRY_WEEKDAY.get(index)
+        if exp_day is not None and now_ist.weekday() == exp_day:
+            return None
+
+        # Daily override cap
+        if self.ml_override_trades_today >= 1:
+            return None
+
+        # Determine direction (must be unambiguous)
+        d          = result.details
+        call_score = int(d.get("call_score") or 0)
+        put_score  = int(d.get("put_score")  or 0)
+
+        if call_score == 3 and put_score < 3:
+            return "CALL"
+        if put_score == 3 and call_score < 3:
+            return "PUT"
+        return None
 
     @staticmethod
     def _pcr_bias_label(pcr: Optional[float]) -> str:
