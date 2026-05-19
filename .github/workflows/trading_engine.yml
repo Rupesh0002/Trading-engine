@@ -52,11 +52,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Write Kite access token
-        run: |
-          mkdir -p config
-          echo "${{ secrets.KITE_ACCESS_TOKEN }}" > config/access_token.txt
-
       - name: Run candle check
         env:
           # ── Secrets ───────────────────────────────────────────────
