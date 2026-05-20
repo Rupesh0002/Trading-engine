@@ -29,6 +29,8 @@ from typing import Any, Dict, List, Optional
 import schedule
 import pytz
 
+import types as _types
+
 from config.settings import (
     ACTIVE_INDICES,
     INDEX_CONFIG,
@@ -41,6 +43,7 @@ from config.settings import (
     PAPER_MODE,
     RISK_PER_TRADE_PCT,
     STRONG_SIGNAL_THRESHOLD,
+    TRADE_LOG_FILE,
     TRADING_CAPITAL,
 )
 from utils.logger import get_logger
@@ -265,7 +268,7 @@ class TradingScheduler:
         try:
             import pandas as _pd
             from datetime import timedelta as _td
-            _trades_csv = "trades_log.csv"
+            _trades_csv = TRADE_LOG_FILE
             if os.path.exists(_trades_csv):
                 _df = _pd.read_csv(_trades_csv)
                 if "date" in _df.columns and "result" in _df.columns:
@@ -494,7 +497,7 @@ class TradingScheduler:
                     logger.debug("Near-miss check [%s]: %s", index, _e)
 
                 # ML override: AUC ≥ 0.72 may fire on exactly 3/5 signals in 10:00–12:30
-                import types as _types
+
                 _override_dir = self._get_ml_override_direction(index, result, now_ist)
                 if _override_dir is None:
                     continue
@@ -1064,10 +1067,7 @@ class TradingScheduler:
             self.eod_sent                 = bool(s.get("eod_sent", False))
             self.last_heartbeat_hour      = int(s.get("last_heartbeat_hour", -1))
 
-            try:
-                self.risk_manager._daily_pnl = float(s.get("daily_pnl", 0.0))
-            except AttributeError:
-                pass
+            self.risk_manager.daily_pnl = float(s.get("daily_pnl", 0.0))
 
             positions = []
             for p in s.get("open_positions", []):
@@ -1215,7 +1215,7 @@ class TradingScheduler:
             total_trades = 0
             total_pnl    = 0.0
             try:
-                _csv_path = "trades_log.csv"
+                _csv_path = TRADE_LOG_FILE
                 if os.path.exists(_csv_path):
                     with open(_csv_path, newline="", encoding="utf-8") as _f:
                         for row in _csv.DictReader(_f):

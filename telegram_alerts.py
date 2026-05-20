@@ -197,7 +197,7 @@ def send_trade_entered(
     target: float,
     paper: bool = True,
     ml_tier: str = "normal",
-    ml_conf: float = None,
+    ml_conf: Optional[float] = None,
 ) -> None:
     """Trade entry confirmation."""
     arrow  = "🟢" if direction == "CALL" else "🔴"
