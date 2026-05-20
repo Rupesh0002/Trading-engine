@@ -313,12 +313,37 @@ def send_ml_conflict(index: str, xgb: float, mem: float) -> None:
 def send_token_expiry_warning() -> None:
     """Sent at startup if access token is expired."""
     _send(
-        "⚠️ <b>ACCESS_TOKEN Expired</b>\n"
-        "Generate a new token via Zerodha Kite login\n"
-        "and update config/access_token.txt\n"
-        "Engine will not start until token is valid.\n"
+        "⚠️ <b>Kite Token Expired</b>\n"
+        "Engine did not start — access token is invalid.\n"
+        "👉 GitHub → Repo → Settings → Secrets → Actions\n"
+        "   Update <code>KITE_ACCESS_TOKEN</code> with today's token.\n"
         "──────────────────"
     )
+
+
+def send_auth_failure(error: str) -> None:
+    """Sent from _run_candle() when Kite auth or engine init fails."""
+    import datetime as _dt
+    import pytz as _pytz
+    now = _dt.datetime.now(_pytz.timezone("Asia/Kolkata")).strftime("%H:%M")
+    is_token = "expired" in error.lower() or "invalid" in error.lower() or "access_token" in error.lower()
+    if is_token:
+        _send(
+            f"🔑 <b>Engine Failed — Token Expired</b>\n"
+            f"⏰ {now} IST\n"
+            f"Kite access token is expired or invalid.\n"
+            f"👉 Go to: <b>GitHub → Repo → Settings →\n"
+            f"   Secrets → Actions → KITE_ACCESS_TOKEN</b>\n"
+            f"   Paste today's fresh token and re-run.\n"
+            f"──────────────────"
+        )
+    else:
+        _send(
+            f"❌ <b>Engine Failed to Start</b>\n"
+            f"⏰ {now} IST\n"
+            f"Error: <code>{error[:200]}</code>\n"
+            f"──────────────────"
+        )
 
 
 def send_startup(indices: list, paper: bool) -> None:

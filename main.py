@@ -105,7 +105,11 @@ def _run_candle() -> None:
         # run_once() writes state.json via its own finally block
     except Exception as exc:
         logger.error("Candle init failed: %s", exc, exc_info=True)
-        # Auth or init failed — write a minimal state.json so the repo always has the file
+        try:
+            from telegram_alerts import send_auth_failure
+            send_auth_failure(str(exc))
+        except Exception:
+            pass
         _write_fallback_state(error=str(exc))
 
 
