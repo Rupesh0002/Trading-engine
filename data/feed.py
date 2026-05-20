@@ -43,15 +43,20 @@ class DataFeed:
     # ------------------------------------------------------------------
 
     def get_today_candles(self, index: str = "NIFTY") -> Optional[pd.DataFrame]:
-        """Returns 15-min bars from market open to now for the given index."""
+        """
+        Returns 15-min bars with 5-day warmup so ADX/EMA/RSI indicators are
+        properly initialised from the first candle of the day.
+        VWAP is computed separately only on today's candles by compute_vwap().
+        """
         cfg = INDEX_CONFIG.get(index)
         if cfg is None:
             logger.error("Unknown index: %s. Valid: %s", index, list(INDEX_CONFIG.keys()))
             return None
 
         now_ist = datetime.now(IST)
-        h, m = MARKET_OPEN.split(":")
-        from_dt = now_ist.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
+        from_dt = (now_ist - timedelta(days=5)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
 
         return self._fetch(cfg["token"], from_dt, now_ist, label=index)
 

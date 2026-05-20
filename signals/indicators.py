@@ -26,20 +26,33 @@ from config.settings import (
 
 def compute_vwap(df: pd.DataFrame) -> pd.Series:
     """
-    Cumulative session VWAP.
-    df must have columns: high, low, close, volume.
-    Returns a Series aligned with df's index.
-    Falls back to cumulative mean of typical price when volume=0 (index instruments).
+    Intraday cumulative VWAP — always resets at today's first candle.
+    df may contain multi-day warmup rows; only today's rows contribute to VWAP.
+    Warmup rows get NaN so candle_idx=-2 (last closed bar) always lands in today.
     """
-    typical = (df["high"] + df["low"] + df["close"]) / 3.0
-    cum_vol = df["volume"].cumsum()
+    import pandas as _pd
+    result = _pd.Series(np.nan, index=df.index, dtype=float)
+
+    if "timestamp" in df.columns:
+        last_date = df["timestamp"].dt.date.iloc[-1]
+        mask = df["timestamp"].dt.date == last_date
+    else:
+        mask = _pd.Series(True, index=df.index)
+
+    today = df[mask]
+    if today.empty:
+        return result
+
+    typical    = (today["high"] + today["low"] + today["close"]) / 3.0
+    cum_vol    = today["volume"].cumsum()
     if cum_vol.iloc[-1] == 0:
-        # Index instruments have no volume — use unweighted cumulative typical price
-        n = pd.Series(range(1, len(df) + 1), index=df.index, dtype=float)
-        return typical.cumsum() / n
-    cum_tp_vol = (typical * df["volume"]).cumsum()
-    vwap = cum_tp_vol / cum_vol.replace(0, np.nan)
-    return vwap
+        n    = _pd.Series(range(1, len(today) + 1), index=today.index, dtype=float)
+        vwap = typical.cumsum() / n
+    else:
+        vwap = (typical * today["volume"]).cumsum() / cum_vol.replace(0, np.nan)
+
+    result[mask] = vwap.values
+    return result
 
 
 def is_above_vwap(df: pd.DataFrame, candle_idx: int = -2) -> Tuple[bool, float, float]:
