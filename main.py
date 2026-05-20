@@ -92,6 +92,11 @@ def _run_candle() -> None:
     can always commit it to the repo.
     """
     validate_settings()
+
+    # Ensure Neon DB tables exist before anything else runs
+    from database.connection import init_db
+    init_db()
+
     try:
         from config.auth import get_kite_client
         kite = get_kite_client()

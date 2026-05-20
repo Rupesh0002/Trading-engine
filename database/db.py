@@ -46,6 +46,8 @@ class DatabaseManager:
                 user=PG_USER,
                 password=PG_PASSWORD,
                 dbname=PG_DB,
+                sslmode="require",      # Neon requires SSL
+                connect_timeout=10,
             )
             self._conn.autocommit = False
             self._ensure_schema()
@@ -105,11 +107,37 @@ class DatabaseManager:
             created_at            TIMESTAMP       DEFAULT CURRENT_TIMESTAMP,
             updated_at            TIMESTAMP       DEFAULT CURRENT_TIMESTAMP
         );
+
+        CREATE TABLE IF NOT EXISTS signals (
+            id              SERIAL PRIMARY KEY,
+            created_at      TIMESTAMP       DEFAULT CURRENT_TIMESTAMP,
+            index_name      VARCHAR(20),
+            direction       VARCHAR(10),
+            conditions_met  INTEGER,
+            adx             NUMERIC(8,4),
+            rsi             NUMERIC(8,4),
+            vwap_distance   NUMERIC(10,2),
+            fib_level       VARCHAR(20),
+            ml_confidence   NUMERIC(8,4),
+            fired           BOOLEAN,
+            skip_reason     VARCHAR(100)
+        );
+
+        CREATE TABLE IF NOT EXISTS engine_state (
+            id              SERIAL PRIMARY KEY,
+            updated_at      TIMESTAMP       DEFAULT CURRENT_TIMESTAMP,
+            capital         NUMERIC(12,2),
+            total_trades    INTEGER,
+            total_pnl       NUMERIC(12,2),
+            open_position   JSONB,
+            last_run_date   DATE,
+            last_run_time   TIME
+        );
         """
         with self._conn.cursor() as cur:
             cur.execute(ddl)
         self._conn.commit()
-        logger.debug("PostgreSQL schema verified.")
+        logger.info("PostgreSQL schema verified (trades, signals, engine_state).")
 
     # ------------------------------------------------------------------
     # Public API
