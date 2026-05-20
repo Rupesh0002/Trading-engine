@@ -1,18 +1,19 @@
 {
   "date": "2026-05-20",
-  "last_run_time": "never",
-  "running_capital": 100000,
+  "last_run_time": "13:10",
+  "running_capital": 100000.0,
   "daily_pnl": 0.0,
   "paper_mode": true,
-  "open_positions": [],
   "daily_trades": {},
   "directions_traded_today": [],
   "profit_lock_done": false,
   "morning_pcr": {},
+  "open_positions": [],
   "shadow_signals_today": 0,
   "ml_override_trades_today": 0,
   "wins_today": 0,
   "losses_today": 0,
   "ml_skipped_today": 0,
-  "eod_sent": false
+  "eod_sent": false,
+  "last_heartbeat_hour": 13
 }
