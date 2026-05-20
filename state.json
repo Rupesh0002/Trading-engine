@@ -1,12 +1,12 @@
 {
   "date": "2026-05-20",
-  "last_run_time": "13:49",
+  "last_run_time": "14:07",
   "running_capital": 100000.0,
   "daily_pnl": 0.0,
   "paper_mode": true,
   "daily_trades": {},
   "directions_traded_today": [],
-  "profit_lock_done": false,
+  "profit_lock_done": true,
   "morning_pcr": {},
   "open_positions": [],
   "shadow_signals_today": 1,
@@ -17,5 +17,5 @@
   "eod_sent": false,
   "vix_alert_sent": false,
   "loss_limit_alert_sent": false,
-  "last_heartbeat_hour": 13
+  "last_heartbeat_hour": 14
 }
