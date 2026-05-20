@@ -102,6 +102,8 @@ class TradingScheduler:
         self.losses_today: int = 0
         self.ml_skipped_today: int = 0
         self.eod_sent: bool = False
+        self.vix_alert_sent: bool = False           # sent once when VIX blocks trading
+        self.loss_limit_alert_sent: bool = False    # sent once when daily loss limit hit
         self.last_heartbeat_hour: int = -1          # hour (IST) of last heartbeat sent
         self._is_new_day: bool = True               # set False by _load_state when same day
         self.running_capital = TRADING_CAPITAL
@@ -237,7 +239,9 @@ class TradingScheduler:
             len(self.open_positions), ist_now_str(),
         )
         for pos in list(self.open_positions):
-            self._close_position(pos, reason="Hard close (15:00)")
+            pnl = self._close_position(pos, reason="Hard close (15:00)")
+            if send_hard_close:
+                send_hard_close(pos["index"], pos["symbol"], pnl, "Hard close (15:00)")
         self.open_positions.clear()
         self.risk_manager.open_positions = 0
 
@@ -428,7 +432,23 @@ class TradingScheduler:
                     send_target_hit(pos["index"], pos["symbol"], pnl,
                                     self.running_capital + self.risk_manager.daily_pnl)
 
-        # ── Risk gate ───────────────────────────────────────────────────────
+        # ── Risk gate — with one-time Telegram alerts ───────────────────────
+        from config.settings import VIX_MAX as _VIX_MAX, DAILY_LOSS_LIMIT_PCT, TRADING_CAPITAL as _TC
+        _loss_limit = _TC * DAILY_LOSS_LIMIT_PCT
+        if vix is not None and vix > _VIX_MAX and not self.vix_alert_sent:
+            self.vix_alert_sent = True
+            try:
+                from telegram_alerts import send_vix_blocked
+                send_vix_blocked(vix, _VIX_MAX)
+            except Exception:
+                pass
+        if self.risk_manager.daily_pnl <= -_loss_limit and not self.loss_limit_alert_sent:
+            self.loss_limit_alert_sent = True
+            try:
+                from telegram_alerts import send_loss_limit_hit
+                send_loss_limit_hit(self.risk_manager.daily_pnl, _loss_limit)
+            except Exception:
+                pass
         if not self.risk_manager.can_trade(vix=vix, open_positions=len(self.open_positions)):
             return
 
@@ -1065,6 +1085,8 @@ class TradingScheduler:
             self.losses_today             = int(s.get("losses_today", 0))
             self.ml_skipped_today         = int(s.get("ml_skipped_today", 0))
             self.eod_sent                 = bool(s.get("eod_sent", False))
+            self.vix_alert_sent           = bool(s.get("vix_alert_sent", False))
+            self.loss_limit_alert_sent    = bool(s.get("loss_limit_alert_sent", False))
             self.last_heartbeat_hour      = int(s.get("last_heartbeat_hour", -1))
 
             self.risk_manager.daily_pnl = float(s.get("daily_pnl", 0.0))
@@ -1119,6 +1141,8 @@ class TradingScheduler:
                 "losses_today":             self.losses_today,
                 "ml_skipped_today":         self.ml_skipped_today,
                 "eod_sent":                 self.eod_sent,
+                "vix_alert_sent":           self.vix_alert_sent,
+                "loss_limit_alert_sent":    self.loss_limit_alert_sent,
                 "last_heartbeat_hour":      self.last_heartbeat_hour,
             }
             with open(self._STATE_FILE, "w") as f:
@@ -1141,6 +1165,8 @@ class TradingScheduler:
         self.losses_today = 0
         self.ml_skipped_today = 0
         self.eod_sent = False
+        self.vix_alert_sent = False
+        self.loss_limit_alert_sent = False
         self.last_heartbeat_hour = -1
         logger.info("New trading day — session state reset.")
 

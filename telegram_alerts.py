@@ -16,10 +16,12 @@ Events sent:
 """
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 import os
 from typing import Optional
 
+import pytz as _pytz
 import requests
 from dotenv import load_dotenv
 
@@ -272,12 +274,37 @@ def send_hard_close(
     )
 
 
+def send_vix_blocked(vix: float, vix_max: float) -> None:
+    """One-time alert when India VIX exceeds the configured maximum."""
+    now = _dt.datetime.now(_pytz.timezone("Asia/Kolkata")).strftime("%H:%M")
+    _send(
+        f"⚠️ <b>Trading Paused — VIX Too High</b>\n"
+        f"⏰ {now} IST\n"
+        f"India VIX : <b>{vix:.2f}</b>  (limit {vix_max:.1f})\n"
+        f"Engine will resume scanning once VIX drops below {vix_max:.1f}.\n"
+        f"──────────────────"
+    )
+
+
+def send_loss_limit_hit(daily_pnl: float, limit: float) -> None:
+    """One-time alert when the daily loss limit is breached."""
+    now = _dt.datetime.now(_pytz.timezone("Asia/Kolkata")).strftime("%H:%M")
+    _send(
+        f"🚨 <b>Daily Loss Limit Hit — Trading Halted</b>\n"
+        f"⏰ {now} IST\n"
+        f"P&L today : ₹{daily_pnl:+,.0f}\n"
+        f"Limit     : ₹{-limit:+,.0f}\n"
+        f"No more trades will be placed today.\n"
+        f"──────────────────"
+    )
+
+
 def send_day_summary(
     trades: int,
     pnl: float,
     capital: float,
     paper: bool = True,
-    ml_auc: float = None,
+    ml_auc: Optional[float] = None,
     shadow_count: int = 0,
     drift_line: str = "",
 ) -> None:
@@ -323,8 +350,6 @@ def send_token_expiry_warning() -> None:
 
 def send_auth_failure(error: str) -> None:
     """Sent from _run_candle() when Kite auth or engine init fails."""
-    import datetime as _dt
-    import pytz as _pytz
     now = _dt.datetime.now(_pytz.timezone("Asia/Kolkata")).strftime("%H:%M")
     is_token = "expired" in error.lower() or "invalid" in error.lower() or "access_token" in error.lower()
     if is_token:
