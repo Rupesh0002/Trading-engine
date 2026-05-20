@@ -99,6 +99,7 @@ class TradingScheduler:
         self.losses_today: int = 0
         self.ml_skipped_today: int = 0
         self.eod_sent: bool = False
+        self.last_heartbeat_hour: int = -1          # hour (IST) of last heartbeat sent
         self._is_new_day: bool = True               # set False by _load_state when same day
         self.running_capital = TRADING_CAPITAL
         self._today: Optional[date] = None
@@ -356,8 +357,10 @@ class TradingScheduler:
         vix = self.feed.get_vix()
         now_ist = datetime.now(IST)
 
-        # ── Hourly heartbeat (fires at 10:00, 11:00, 12:00, 13:00, 14:00) ──
-        if now_ist.minute == 0 and 10 <= now_ist.hour <= 14:
+        # ── Hourly heartbeat (fires once per hour: 10, 11, 12, 13, 14 IST) ──
+        # Uses last_heartbeat_hour so a late-running cron still fires exactly once per hour.
+        if 10 <= now_ist.hour <= 14 and now_ist.hour != self.last_heartbeat_hour:
+            self.last_heartbeat_hour = now_ist.hour
             try:
                 from telegram_alerts import send_hourly_status
                 send_hourly_status(
@@ -1059,6 +1062,7 @@ class TradingScheduler:
             self.losses_today             = int(s.get("losses_today", 0))
             self.ml_skipped_today         = int(s.get("ml_skipped_today", 0))
             self.eod_sent                 = bool(s.get("eod_sent", False))
+            self.last_heartbeat_hour      = int(s.get("last_heartbeat_hour", -1))
 
             try:
                 self.risk_manager._daily_pnl = float(s.get("daily_pnl", 0.0))
@@ -1115,6 +1119,7 @@ class TradingScheduler:
                 "losses_today":             self.losses_today,
                 "ml_skipped_today":         self.ml_skipped_today,
                 "eod_sent":                 self.eod_sent,
+                "last_heartbeat_hour":      self.last_heartbeat_hour,
             }
             with open(self._STATE_FILE, "w") as f:
                 json.dump(state, f, indent=2, default=str)
@@ -1136,6 +1141,7 @@ class TradingScheduler:
         self.losses_today = 0
         self.ml_skipped_today = 0
         self.eod_sent = False
+        self.last_heartbeat_hour = -1
         logger.info("New trading day — session state reset.")
 
     def _get_daily_candle(self, index: str, day) -> Optional[Dict]:
