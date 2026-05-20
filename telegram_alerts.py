@@ -57,6 +57,102 @@ def _send(text: str) -> None:
 
 # ── Public alert functions ─────────────────────────────────────────────────────
 
+def send_engine_start(
+    today: str,
+    current_time: str,
+    indices: str,
+    capital: float,
+    auc: Optional[float],
+    pattern_buckets: int,
+    pcr: Optional[float],
+    paper: bool = True,
+) -> None:
+    """09:15 IST — fired once on the first candle run of each trading day."""
+    mode    = "PAPER" if paper else "LIVE"
+    pcr_str = f"{pcr:.2f}" if pcr is not None else "N/A"
+    auc_str = f"{auc:.3f}" if auc else "N/A"
+    _send(
+        f"🟢 <b>Trading Engine Started</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📅 Date     : {today}\n"
+        f"⏰ Time     : {current_time} IST\n"
+        f"📊 Index    : {indices}\n"
+        f"💰 Capital  : ₹{capital:,.0f}\n"
+        f"📈 Mode     : {mode}\n"
+        f"🤖 ML Model : AUC {auc_str} | {pattern_buckets} buckets\n"
+        f"🌡 PCR      : {pcr_str}\n"
+        f"⚡ Status   : All systems ready\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"Signal window: 10:00 – 15:00 IST"
+    )
+
+
+def send_engine_end(
+    today: str,
+    trades_today: int,
+    wins: int,
+    losses: int,
+    pnl_today: float,
+    total_trades: int,
+    total_pnl: float,
+    capital: float,
+    auc: Optional[float],
+    ml_mode: str,
+    signals_today: int,
+    ml_skipped: int,
+) -> None:
+    """15:15 IST — fired once after the trading session closes."""
+    win_rate = wins / trades_today * 100 if trades_today else 0.0
+    auc_str  = f"{auc:.3f}" if auc else "N/A"
+    _send(
+        f"🔴 <b>Trading Engine Stopped</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📅 Date        : {today}\n"
+        f"⏰ Stopped at  : 15:15 IST\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 <b>TODAY'S SUMMARY</b>\n"
+        f"  Trades placed  : {trades_today}\n"
+        f"  Wins / Losses  : {wins} / {losses}\n"
+        f"  Win rate       : {win_rate:.0f}%\n"
+        f"  P&L today      : ₹{pnl_today:+,.0f}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📈 <b>OVERALL</b>\n"
+        f"  Total trades   : {total_trades}\n"
+        f"  Total P&L      : ₹{total_pnl:+,.0f}\n"
+        f"  Capital        : ₹{capital:,.0f}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🤖 <b>ML STATUS</b>\n"
+        f"  AUC            : {auc_str}\n"
+        f"  Mode           : {ml_mode}\n"
+        f"  Signals today  : {signals_today}\n"
+        f"  ML skipped     : {ml_skipped}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"Next session: Tomorrow 09:15 IST"
+    )
+
+
+def send_hourly_status(
+    time_str: str,
+    open_positions: int,
+    daily_pnl: float,
+    trades_today: int,
+    capital: float,
+    paper: bool = True,
+) -> None:
+    """Sent at the top of each market hour (10:00, 11:00, …, 14:00) as a heartbeat."""
+    mode  = "📄 PAPER" if paper else "💰 LIVE"
+    pos_str = f"{open_positions} open" if open_positions else "No open positions"
+    _send(
+        f"🔁 <b>Engine Running</b>  [{mode}]\n"
+        f"⏰ {time_str} IST\n"
+        f"📊 Positions  : {pos_str}\n"
+        f"📈 Trades     : {trades_today} today\n"
+        f"💰 P&L today  : ₹{daily_pnl:+,.0f}\n"
+        f"🏦 Capital    : ₹{capital:,.0f}\n"
+        f"──────────────────"
+    )
+
+
 def send_morning_bias(index: str, pcr: float, bias: str) -> None:
     """09:00 AM — PCR and directional bias for the day."""
     mode = "📄 PAPER" if _is_paper() else "💰 LIVE"

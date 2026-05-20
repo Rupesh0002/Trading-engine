@@ -88,12 +88,53 @@ def _run_candle() -> None:
     """
     Single-candle execution for GitHub Actions per-candle mode.
     Loads state.json → checks one candle → saves state.json → exits.
+    state.json is always written (even on auth failure) so GitHub Actions
+    can always commit it to the repo.
     """
     validate_settings()
-    from config.auth import get_kite_client
-    kite = get_kite_client()
-    from scheduler import TradingScheduler
-    TradingScheduler(kite).run_once()
+    try:
+        from config.auth import get_kite_client
+        kite = get_kite_client()
+        from scheduler import TradingScheduler
+        TradingScheduler(kite).run_once()
+        # run_once() writes state.json via its own finally block
+    except Exception as exc:
+        logger.error("Candle init failed: %s", exc, exc_info=True)
+        # Auth or init failed — write a minimal state.json so the repo always has the file
+        _write_fallback_state(error=str(exc))
+
+
+def _write_fallback_state(error: str = "") -> None:
+    """Write a minimal state.json when the scheduler cannot be initialised."""
+    import json as _json
+    state_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json")
+    # Don't overwrite a valid existing state
+    if os.path.exists(state_path):
+        try:
+            with open(state_path) as _f:
+                existing = _json.load(_f)
+            if existing.get("date"):
+                logger.info("[STATE] Existing state.json kept (init failed: %s)", error)
+                return
+        except Exception:
+            pass
+    now = datetime.now(IST)
+    state = {
+        "date":            now.strftime("%Y-%m-%d"),
+        "last_run_time":   now.strftime("%H:%M"),
+        "running_capital": TRADING_CAPITAL,
+        "daily_pnl":       0.0,
+        "paper_mode":      PAPER_MODE,
+        "open_positions":  [],
+        "daily_trades":    {},
+        "error":           error,
+    }
+    try:
+        with open(state_path, "w") as _f:
+            _json.dump(state, _f, indent=2, default=str)
+        logger.info("[STATE] Fallback state.json written to %s", state_path)
+    except Exception as write_exc:
+        logger.error("[STATE] Could not write fallback state.json: %s", write_exc)
 
 
 # ── Scheduler (default mode) ───────────────────────────────────────────────────

@@ -93,8 +93,13 @@ class TradingScheduler:
         self.daily_trades:   Dict[str, int] = {idx: 0 for idx in ACTIVE_INDICES}
         self.directions_traded_today: set = set()   # global CALL/PUT cap across all indices
         self.profit_lock_done: bool = False          # 2 PM profit lock fires once per day
-        self.shadow_signals_today: int = 0          # signals evaluated but not traded today
-        self.ml_override_trades_today: int = 0      # ML-override trades placed today
+        self.shadow_signals_today: int = 0
+        self.ml_override_trades_today: int = 0
+        self.wins_today: int = 0
+        self.losses_today: int = 0
+        self.ml_skipped_today: int = 0
+        self.eod_sent: bool = False
+        self._is_new_day: bool = True               # set False by _load_state when same day
         self.running_capital = TRADING_CAPITAL
         self._today: Optional[date] = None
 
@@ -320,6 +325,11 @@ class TradingScheduler:
                 drift_line=drift_line,
             )
 
+        # Engine-end Telegram notification (once per day, guarded by eod_sent)
+        if not self.eod_sent:
+            self._notify_engine_end(trades_today, pnl, capital_now, ml_auc)
+            self.eod_sent = True
+
         # Retrain ML model (sync in candle/Actions mode, background in scheduler mode)
         self._retrain_eod(trades_today, sync=sync_retrain)
 
@@ -345,6 +355,21 @@ class TradingScheduler:
         # ── Fetch VIX ──────────────────────────────────────────────────────
         vix = self.feed.get_vix()
         now_ist = datetime.now(IST)
+
+        # ── Hourly heartbeat (fires at 10:00, 11:00, 12:00, 13:00, 14:00) ──
+        if now_ist.minute == 0 and 10 <= now_ist.hour <= 14:
+            try:
+                from telegram_alerts import send_hourly_status
+                send_hourly_status(
+                    time_str       = now_ist.strftime("%H:%M"),
+                    open_positions = len(self.open_positions),
+                    daily_pnl      = self.risk_manager.daily_pnl,
+                    trades_today   = sum(self.daily_trades.values()),
+                    capital        = self.running_capital,
+                    paper          = PAPER_MODE,
+                )
+            except Exception as _he:
+                logger.debug("Hourly status send failed: %s", _he)
 
         # ── 2 PM profit lock — close profitable positions at first cycle ≥ 14:00
         from config.settings import PROFIT_LOCK_TIME as _PLT
@@ -639,6 +664,7 @@ class TradingScheduler:
                     index, blended_conf, adaptive_reason,
                 )
                 self.shadow_signals_today += 1
+                self.ml_skipped_today += 1
                 return
 
             ml_tier = "strong" if blended_conf >= 0.60 else (
@@ -791,6 +817,10 @@ class TradingScheduler:
         pnl     = (exit_premium - pos["entry_premium"]) * pos["quantity"]
         pnl_pct = (exit_premium - pos["entry_premium"]) / pos["entry_premium"] * 100
         self.risk_manager.record_trade_pnl(pnl)
+        if pnl > 0:
+            self.wins_today += 1
+        else:
+            self.losses_today += 1
         self._write_ml_signal_row(pos, exit_premium, pnl, pnl_pct, reason)
         self.adaptive.record_outcome(
             pos["index"],
@@ -971,31 +1001,38 @@ class TradingScheduler:
 
         hour_min = now.hour * 60 + now.minute
 
-        if 9 * 60 <= hour_min < 9 * 60 + 30:
-            logger.info("── Morning Setup (candle mode) ── %s", ist_now_str())
-            self._morning_setup()
+        try:
+            if 9 * 60 <= hour_min < 9 * 60 + 30:
+                logger.info("── Morning Setup (candle mode) ── %s", ist_now_str())
+                self._morning_setup()
+                if self._is_new_day:
+                    self._notify_engine_start(today, now)
 
-        elif 10 * 60 <= hour_min < 15 * 60:
-            self._candle_cycle()
+            elif 10 * 60 <= hour_min < 15 * 60:
+                self._candle_cycle()
 
-        elif 15 * 60 <= hour_min < 15 * 60 + 30:
-            self._hard_close()
-            self.open_positions.clear()
-            self.risk_manager.open_positions = 0
-            self._day_summary(sync_retrain=True)
+            elif 15 * 60 <= hour_min < 15 * 60 + 30:
+                self._hard_close()
+                self.open_positions.clear()
+                self.risk_manager.open_positions = 0
+                self._day_summary(sync_retrain=True)
 
-        else:
-            logger.info(
-                "Outside trading window (%02d:%02d IST) — no action.",
-                now.hour, now.minute,
-            )
-
-        self._save_state(today)
+            else:
+                logger.info(
+                    "Outside trading window (%02d:%02d IST) — no action.",
+                    now.hour, now.minute,
+                )
+        except Exception as exc:
+            logger.error("run_once error: %s", exc, exc_info=True)
+        finally:
+            # Always persist state so GitHub Actions can always commit state.json
+            self._save_state(today)
 
     def _load_state(self, today) -> None:
         """Load session state from state.json. Resets automatically on a new day."""
         if not os.path.exists(self._STATE_FILE):
             logger.info("No state file — starting fresh.")
+            self._is_new_day = True
             self._reset_day()
             return
 
@@ -1005,8 +1042,11 @@ class TradingScheduler:
 
             if s.get("date") != str(today):
                 logger.info("New trading day — resetting state.")
+                self._is_new_day = True
                 self._reset_day()
                 return
+
+            self._is_new_day = False
 
             self.running_capital          = float(s.get("running_capital", TRADING_CAPITAL))
             self.daily_trades             = s.get("daily_trades", {idx: 0 for idx in ACTIVE_INDICES})
@@ -1015,6 +1055,10 @@ class TradingScheduler:
             self.morning_pcr              = s.get("morning_pcr", {})
             self.shadow_signals_today     = int(s.get("shadow_signals_today", 0))
             self.ml_override_trades_today = int(s.get("ml_override_trades_today", 0))
+            self.wins_today               = int(s.get("wins_today", 0))
+            self.losses_today             = int(s.get("losses_today", 0))
+            self.ml_skipped_today         = int(s.get("ml_skipped_today", 0))
+            self.eod_sent                 = bool(s.get("eod_sent", False))
 
             try:
                 self.risk_manager._daily_pnl = float(s.get("daily_pnl", 0.0))
@@ -1056,8 +1100,10 @@ class TradingScheduler:
 
             state = {
                 "date":                    str(today),
+                "last_run_time":           datetime.now(IST).strftime("%H:%M"),
                 "running_capital":         round(self.running_capital, 2),
                 "daily_pnl":               round(self.risk_manager.daily_pnl, 2),
+                "paper_mode":              PAPER_MODE,
                 "daily_trades":            self.daily_trades,
                 "directions_traded_today": list(self.directions_traded_today),
                 "profit_lock_done":        self.profit_lock_done,
@@ -1065,6 +1111,10 @@ class TradingScheduler:
                 "open_positions":          positions,
                 "shadow_signals_today":      self.shadow_signals_today,
                 "ml_override_trades_today": self.ml_override_trades_today,
+                "wins_today":               self.wins_today,
+                "losses_today":             self.losses_today,
+                "ml_skipped_today":         self.ml_skipped_today,
+                "eod_sent":                 self.eod_sent,
             }
             with open(self._STATE_FILE, "w") as f:
                 json.dump(state, f, indent=2, default=str)
@@ -1082,6 +1132,10 @@ class TradingScheduler:
         self.profit_lock_done = False
         self.shadow_signals_today = 0
         self.ml_override_trades_today = 0
+        self.wins_today = 0
+        self.losses_today = 0
+        self.ml_skipped_today = 0
+        self.eod_sent = False
         logger.info("New trading day — session state reset.")
 
     def _get_daily_candle(self, index: str, day) -> Optional[Dict]:
@@ -1102,6 +1156,97 @@ class TradingScheduler:
         except Exception as exc:
             logger.debug("Daily candle fetch failed [%s %s]: %s", index, day, exc)
             return None
+
+    def _notify_engine_start(self, today, now_ist) -> None:
+        """Send engine-start Telegram message (once per day after morning setup)."""
+        try:
+            from telegram_alerts import send_engine_start
+            auc: Optional[float] = None
+            try:
+                _meta = os.path.join("ml", "models", "model_metadata.json")
+                if os.path.exists(_meta):
+                    with open(_meta) as _f:
+                        auc = float(json.load(_f).get("cv_auc", 0)) or None
+            except Exception:
+                pass
+
+            buckets = 0
+            try:
+                buckets = len(self.adaptive.memory.all_buckets())
+            except Exception:
+                pass
+
+            # Average available PCR values (filled by morning_setup just before this call)
+            pcr_vals = [v for v in self.morning_pcr.values() if v is not None]
+            pcr_avg  = round(sum(pcr_vals) / len(pcr_vals), 2) if pcr_vals else None
+
+            send_engine_start(
+                today        = str(today),
+                current_time = now_ist.strftime("%H:%M"),
+                indices      = ", ".join(ACTIVE_INDICES),
+                capital      = self.running_capital,
+                auc          = auc,
+                pattern_buckets = buckets,
+                pcr          = pcr_avg,
+                paper        = PAPER_MODE,
+            )
+        except Exception as exc:
+            logger.warning("Engine-start notification failed: %s", exc)
+
+    def _notify_engine_end(
+        self,
+        trades_today: int,
+        pnl_today: float,
+        capital: float,
+        ml_auc: Optional[float],
+    ) -> None:
+        """Send engine-end Telegram message (once per day after hard close)."""
+        try:
+            from telegram_alerts import send_engine_end
+            import csv as _csv
+
+            # All-time stats from trades_log.csv
+            total_trades = 0
+            total_pnl    = 0.0
+            try:
+                _csv_path = "trades_log.csv"
+                if os.path.exists(_csv_path):
+                    with open(_csv_path, newline="", encoding="utf-8") as _f:
+                        for row in _csv.DictReader(_f):
+                            try:
+                                total_trades += 1
+                                total_pnl    += float(row.get("pnl") or 0)
+                            except (ValueError, TypeError):
+                                pass
+            except Exception:
+                pass
+
+            # ML mode label
+            _ML_ACTIVATE_AUC = 0.65
+            if ml_auc and ml_auc >= _ML_ACTIVATE_AUC:
+                ml_mode = f"Active (AUC {ml_auc:.3f})"
+            else:
+                ml_mode = "Indicators Only (training)"
+
+            # signals_today = actual trades + shadow/blocked signals
+            signals_today = trades_today + self.shadow_signals_today
+
+            send_engine_end(
+                today        = datetime.now(IST).strftime("%Y-%m-%d"),
+                trades_today = trades_today,
+                wins         = self.wins_today,
+                losses       = self.losses_today,
+                pnl_today    = pnl_today,
+                total_trades = total_trades,
+                total_pnl    = round(total_pnl, 2),
+                capital      = capital,
+                auc          = ml_auc,
+                ml_mode      = ml_mode,
+                signals_today = signals_today,
+                ml_skipped   = self.ml_skipped_today,
+            )
+        except Exception as exc:
+            logger.warning("Engine-end notification failed: %s", exc)
 
     def _get_ml_override_direction(
         self, index: str, result, now_ist
