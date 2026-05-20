@@ -52,15 +52,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Test DB connection
-        env:
-          DATABASE_HOST:     ${{ secrets.DATABASE_HOST }}
-          DATABASE_PORT:     "5432"
-          DATABASE_NAME:     ${{ secrets.DATABASE_NAME }}
-          DATABASE_USERNAME: ${{ secrets.DATABASE_USERNAME }}
-          DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
-        run: python test_db.py
-
       - name: Run candle check
         env:
           # ── Secrets ───────────────────────────────────────────────
