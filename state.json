@@ -1,6 +1,6 @@
 {
   "date": "2026-05-20",
-  "last_run_time": "13:10",
+  "last_run_time": "13:26",
   "running_capital": 100000.0,
   "daily_pnl": 0.0,
   "paper_mode": true,
@@ -15,5 +15,7 @@
   "losses_today": 0,
   "ml_skipped_today": 0,
   "eod_sent": false,
+  "vix_alert_sent": false,
+  "loss_limit_alert_sent": false,
   "last_heartbeat_hour": 13
 }
