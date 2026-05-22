@@ -73,9 +73,11 @@ class DataFeed:
         from_date: str,
         to_date: str,
         index: str = "NIFTY",
+        interval: str = CANDLE_INTERVAL,
     ) -> Optional[pd.DataFrame]:
         """
-        Returns 15-min bars between from_date and to_date.
+        Returns OHLCV bars between from_date and to_date.
+        interval: e.g. "5minute", "15minute" (default from settings)
         Kite limits one request to ~60 days; this method auto-chunks.
         """
         cfg = INDEX_CONFIG.get(index)
@@ -90,7 +92,7 @@ class DataFeed:
         cursor = from_dt
         while cursor < to_dt:
             end   = min(cursor + timedelta(days=59), to_dt)
-            chunk = self._fetch(cfg["token"], cursor, end, label=index)
+            chunk = self._fetch(cfg["token"], cursor, end, label=index, interval=interval)
             if chunk is not None and not chunk.empty:
                 chunks.append(chunk)
             cursor = end + timedelta(days=1)
@@ -99,7 +101,8 @@ class DataFeed:
             return None
 
         df = pd.concat(chunks).drop_duplicates("timestamp").sort_values("timestamp")
-        logger.info("Historical: %d bars for %s (%s → %s)", len(df), index, from_date, to_date)
+        logger.info("Historical: %d bars for %s (%s → %s) [%s]",
+                    len(df), index, from_date, to_date, interval)
         return df.reset_index(drop=True)
 
     # ------------------------------------------------------------------
@@ -150,13 +153,14 @@ class DataFeed:
         from_dt: datetime,
         to_dt: datetime,
         label: str = "",
+        interval: str = CANDLE_INTERVAL,
     ) -> Optional[pd.DataFrame]:
         try:
             records = self.kite.historical_data(
                 instrument_token=token,
                 from_date=from_dt,
                 to_date=to_dt,
-                interval=CANDLE_INTERVAL,
+                interval=interval,
             )
         except Exception as exc:
             logger.error("Kite historical_data [%s]: %s", label, exc)

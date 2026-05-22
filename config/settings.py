@@ -20,25 +20,50 @@ CANDLE_MINUTES       = int(os.getenv("CANDLE_MINUTES", 15))
 MARKET_OPEN          = os.getenv("MARKET_OPEN", "09:15")
 TRADE_START          = os.getenv("TRADE_START", "09:30")
 SIGNAL_START         = os.getenv("SIGNAL_START", "10:00")
+SIGNAL_END           = os.getenv("SIGNAL_END",   "15:00")   # last candle for NEW entries
 TRADE_END            = os.getenv("TRADE_END", "15:00")
 MARKET_CLOSE         = os.getenv("MARKET_CLOSE", "15:30")
 
 # ── Capital and risk ─────────────────────────────────────────────────────────
 TRADING_CAPITAL      = float(os.getenv("TRADING_CAPITAL", 100000))
 RISK_PER_TRADE_PCT   = float(os.getenv("RISK_PER_TRADE_PCT", 0.02))
-STOP_LOSS_PCT        = float(os.getenv("STOP_LOSS_PCT", 0.03))
-TARGET_PCT           = float(os.getenv("TARGET_PCT", 0.09))
+# SL on option premium: 15% cuts losses fast enough to beat theta decay
+STOP_LOSS_PCT        = float(os.getenv("STOP_LOSS_PCT", 0.15))
+# TARGET_PCT is the 4/5-normal target — kept as the primary alias
+TARGET_PCT           = float(os.getenv("TARGET_PCT", 0.45))
 TRAILING_SL_PCT      = float(os.getenv("TRAILING_SL_PCT", 0.03))
 DAILY_LOSS_LIMIT_PCT = float(os.getenv("DAILY_LOSS_LIMIT_PCT", 0.05))
 MAX_OPEN_POSITIONS   = int(os.getenv("MAX_OPEN_POSITIONS", 1))   # single trade at a time
+MAX_LOTS_CAP         = int(os.getenv("MAX_LOTS_CAP", 3))         # hard ceiling on lots per trade
+LOT_SIZING_SL_PCT    = float(os.getenv("LOT_SIZING_SL_PCT", 0.12))  # SL% used for lot budget calc
 MIN_PREMIUM          = float(os.getenv("MIN_PREMIUM", 30))
 MAX_PREMIUM          = float(os.getenv("MAX_PREMIUM", 500))
 
+# ── Tiered profit targets ─────────────────────────────────────────────────────
+# Normal  (4/5):        SL -15%, TP +45% → 3:1 R:R
+# Strong  (5/5 OTM):   SL -15%, TP +60% → 4:1 R:R
+# 3/5-ADX (ADX > 25):  SL -12%, TP +36% → 3:1 R:R (GOAL 1, not yet active)
+TARGET_PCT_NORMAL    = float(os.getenv("TARGET_PCT_NORMAL",  0.45))
+TARGET_PCT_STRONG    = float(os.getenv("TARGET_PCT_STRONG",  0.60))
+TARGET_PCT_3_5       = float(os.getenv("TARGET_PCT_3_5",     0.36))
+SL_PCT_3_5           = float(os.getenv("SL_PCT_3_5",         0.12))   # tighter SL for 3/5 tier
+
 # ── Flexible profit exit ──────────────────────────────────────────────────────
-MIN_PROFIT_RATIO          = float(os.getenv("MIN_PROFIT_RATIO", 2.5))
-MAX_PROFIT_RATIO          = float(os.getenv("MAX_PROFIT_RATIO", 3.0))
-WEAK_SIGNAL_TARGET_RATIO  = float(os.getenv("WEAK_SIGNAL_TARGET_RATIO", 1.5))  # 4/5 signal target
-PROFIT_LOCK_TIME          = os.getenv("PROFIT_LOCK_TIME", "14:00")              # close profitable trades after this
+MIN_PROFIT_RATIO          = float(os.getenv("MIN_PROFIT_RATIO", 3.0))           # kept for backcompat
+MAX_PROFIT_RATIO          = float(os.getenv("MAX_PROFIT_RATIO", 4.0))           # kept for backcompat
+WEAK_SIGNAL_TARGET_RATIO  = float(os.getenv("WEAK_SIGNAL_TARGET_RATIO", 3.0))  # kept for backcompat
+PROFIT_LOCK_TIME          = os.getenv("PROFIT_LOCK_TIME", "14:00")
+
+# ── Time-weighted exit (beats theta on slow moves) ────────────────────────────
+# Max candles a trade may be held before forced exit at market price.
+# 4 candles = 60 min — prevents theta from eroding the premium on stalled trades.
+MAX_CANDLES_HELD     = int(os.getenv("MAX_CANDLES_HELD", 4))
+# Trailing TP thresholds per candle held (% gain on option premium).
+# Trades that move quickly lock in profits before theta compounds.
+TRAILING_TP_ENABLED  = os.getenv("TRAILING_TP_ENABLED", "True") == "True"
+TRAILING_TP_C1       = float(os.getenv("TRAILING_TP_C1", 0.25))   # exit if +25% after candle 1
+TRAILING_TP_C2       = float(os.getenv("TRAILING_TP_C2", 0.35))   # exit if +35% after candle 2
+TRAILING_TP_C3       = float(os.getenv("TRAILING_TP_C3", 0.45))   # exit if +45% after candle 3
 
 # ── Signal conditions ────────────────────────────────────────────────────────
 MIN_CONDITIONS       = int(os.getenv("MIN_CONDITIONS", 4))
@@ -99,15 +124,41 @@ LOG_LEVEL            = os.getenv("LOG_LEVEL", "INFO")
 DASHBOARD_PORT       = int(os.getenv("DASHBOARD_PORT", 8501))
 DASHBOARD_REFRESH    = int(os.getenv("DASHBOARD_REFRESH", 5))
 
+# ── Conviction system ────────────────────────────────────────────────────────
+# Score 0-100: Momentum(0-40) + Options(0-35) + Structure(0-25)
+# score < CONVICTION_MIN_SCORE → NO TRADE
+CONVICTION_MIN_SCORE = int(os.getenv("CONVICTION_MIN_SCORE",   65))
+IV_RANK_MAX          = float(os.getenv("IV_RANK_MAX",          80.0))  # hard block above this
+IV_RANK_SWEET_MIN    = float(os.getenv("IV_RANK_SWEET_MIN",    20.0))  # below → no edge (IV crush)
+IV_RANK_SWEET_MAX    = float(os.getenv("IV_RANK_SWEET_MAX",    50.0))  # above → getting expensive
+
+# ── Dynamic exit thresholds ──────────────────────────────────────────────────
+# After FAST_MOVE_CANDLES held:
+#   gain >= FAST_MOVE_PCT   → trail at (1-FAST_TRAIL_PCT) × peak
+#   gain >= SLOW_MOVE_PCT   → exit at fixed SLOW_MOVE_TARGET_PCT
+#   |gain| <= NO_MOVE_PCT   → exit flat (no theta drag)
+FAST_MOVE_PCT        = float(os.getenv("FAST_MOVE_PCT",        0.20))
+SLOW_MOVE_PCT        = float(os.getenv("SLOW_MOVE_PCT",        0.08))
+NO_MOVE_PCT          = float(os.getenv("NO_MOVE_PCT",          0.03))
+FAST_TRAIL_PCT       = float(os.getenv("FAST_TRAIL_PCT",       0.10))  # trail at 90% of peak
+SLOW_MOVE_TARGET_PCT = float(os.getenv("SLOW_MOVE_TARGET_PCT", 0.30))
+FAST_MOVE_CANDLES    = int(os.getenv("FAST_MOVE_CANDLES",      2))     # classify after 2 candles
+
+# ── Day quality gate ─────────────────────────────────────────────────────────
+# REQUIRE_PREMIUM_DAY=True → only trade on PREMIUM days (4/4 checks pass).
+# Analysis: NORMAL days (3/4) have 11% win rate vs ~35% on PREMIUM days.
+REQUIRE_PREMIUM_DAY  = os.getenv("REQUIRE_PREMIUM_DAY", "False").lower() == "true"
+
 # ── Backtest ─────────────────────────────────────────────────────────────────
-BACKTEST_START       = os.getenv("BACKTEST_START", "2023-01-01")
-BACKTEST_END         = os.getenv("BACKTEST_END", "2024-12-31")
-BACKTEST_VIX         = float(os.getenv("BACKTEST_VIX", 15.0))  # assumed VIX for premium simulation
+BACKTEST_START          = os.getenv("BACKTEST_START", "2023-01-01")
+BACKTEST_END            = os.getenv("BACKTEST_END", "2024-12-31")
+BACKTEST_VIX            = float(os.getenv("BACKTEST_VIX", 15.0))
+BACKTEST_SLIPPAGE_PTS   = int(os.getenv("BACKTEST_SLIPPAGE_PTS", "2"))  # per-leg slippage pts
 
 # ── Derived values ────────────────────────────────────────────────────────────
-RISK_REWARD_RATIO    = TARGET_PCT / STOP_LOSS_PCT
-SOFT_TARGET_PCT      = STOP_LOSS_PCT * MIN_PROFIT_RATIO   # e.g. 7.5% at 2.5×
-HARD_TARGET_PCT      = STOP_LOSS_PCT * MAX_PROFIT_RATIO   # e.g. 9.0% at 3.0×
+RISK_REWARD_RATIO    = TARGET_PCT_NORMAL / STOP_LOSS_PCT   # 0.45 / 0.15 = 3.0
+SOFT_TARGET_PCT      = TARGET_PCT_NORMAL                   # 45% — normal exit
+HARD_TARGET_PCT      = TARGET_PCT_STRONG                   # 60% — strong/OTM exit
 
 ACCESS_TOKEN_FILE    = "config/access_token.txt"
 TRADE_LOG_FILE       = "logs/trade_log.csv"

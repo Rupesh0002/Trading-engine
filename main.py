@@ -209,16 +209,16 @@ def _run_backtest(from_date: str, to_date: str, index: str) -> None:
             f"  {'#':>3}  {'Date':<12} {'Dir':<5} "
             f"{'EntrySpot':>10} {'ExitSpot':>10} "
             f"{'EntryPrem':>10} {'ExitPrem':>10} "
-            f"{'Qty':>5} {'PnL':>10} {'%':>7}  Cond  Reason"
+            f"{'Qty':>5} {'PnL':>10} {'%':>7}  Score  Reason"
         )
-        print("  " + "─" * 106)
+        print("  " + "─" * 110)
         for i, t in enumerate(results.trades, 1):
             print(
                 f"  {i:>3}  {t.date:<12} {t.direction:<5} "
                 f"{t.entry_spot:>10.0f} {t.exit_spot:>10.0f} "
                 f"{t.entry_premium:>10.2f} {t.exit_premium:>10.2f} "
                 f"{t.quantity:>5} {t.pnl:>+10.2f} {t.pnl_pct:>+6.1f}%  "
-                f"{t.conditions_met}/5   {t.exit_reason}"
+                f"{t.conviction_score:>3}/100  {t.exit_reason}"
             )
         print("  " + "─" * 106)
         print(

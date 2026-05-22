@@ -610,7 +610,9 @@ class TradingScheduler:
             logger.info("[%s] Premium unavailable or out of range — skip.", index)
             return
 
-        quantity, lots = self.risk_manager.position_size(premium, index)
+        quantity, lots = self.risk_manager.position_size(
+            premium, index, adx=float(result.details.get("adx") or 0),
+        )
         if quantity == 0:
             logger.info("[%s] Position size 0 for premium=%.2f — skip.", index, premium)
             return

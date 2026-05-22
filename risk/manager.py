@@ -18,6 +18,8 @@ from config.settings import (
     ACTIVE_INDICES,
     DAILY_LOSS_LIMIT_PCT,
     INDEX_CONFIG,
+    LOT_SIZING_SL_PCT,
+    MAX_LOTS_CAP,
     MAX_OPEN_POSITIONS,
     MAX_PREMIUM,
     MIN_PREMIUM,
@@ -88,28 +90,41 @@ class RiskManager:
     # Position sizing
     # ------------------------------------------------------------------
 
-    def position_size(self, entry_premium: float, index: str) -> tuple[int, int]:
+    def position_size(
+        self,
+        entry_premium: float,
+        index: str,
+        adx: float = 0.0,
+    ) -> tuple[int, int]:
         """
-        Returns (quantity, lots) for a given entry premium and index.
+        Returns (quantity, lots) using ADX-quality-scaled risk budget.
         Formula (all from .env):
-          risk_amount = TRADING_CAPITAL × RISK_PER_TRADE_PCT
-          sl_points   = entry_premium   × STOP_LOSS_PCT
-          raw_qty     = floor(risk_amount / sl_points)
-          lots        = floor(raw_qty / lot_size)
-          quantity    = lots × lot_size
+          risk_budget = TRADING_CAPITAL × RISK_PER_TRADE_PCT
+          sl_per_lot  = entry_premium × LOT_SIZING_SL_PCT × lot_size
+          base_lots   = floor(risk_budget / sl_per_lot)
+          adx_mult    = 1.0 (ADX>30) | 0.75 (ADX>25) | 0.5 (else)
+          lots        = round(base_lots × adx_mult), capped at MAX_LOTS_CAP
         """
         if entry_premium <= 0:
             return 0, 0
 
-        lot_size = INDEX_CONFIG.get(index, INDEX_CONFIG["NIFTY"])["lot_size"]
-        risk_amount = TRADING_CAPITAL * RISK_PER_TRADE_PCT
-        sl_points   = entry_premium * STOP_LOSS_PCT
+        lot_size    = INDEX_CONFIG.get(index, INDEX_CONFIG["NIFTY"])["lot_size"]
+        risk_budget = TRADING_CAPITAL * RISK_PER_TRADE_PCT
+        sl_per_lot  = entry_premium * LOT_SIZING_SL_PCT * lot_size
 
-        if sl_points <= 0:
+        if sl_per_lot <= 0:
             return 0, 0
 
-        raw_qty  = math.floor(risk_amount / sl_points)
-        lots     = math.floor(raw_qty / lot_size)
+        base_lots = max(1, int(risk_budget / sl_per_lot))
+
+        if adx > 30:
+            adx_mult = 1.0
+        elif adx > 25:
+            adx_mult = 0.75
+        else:
+            adx_mult = 0.5
+
+        lots     = max(1, min(round(base_lots * adx_mult), MAX_LOTS_CAP))
         quantity = lots * lot_size
 
         if quantity == 0:
@@ -120,8 +135,8 @@ class RiskManager:
             )
 
         logger.debug(
-            "[%s] Sizing: risk=₹%.0f  SL_pts=%.2f  qty=%d  lots=%d",
-            index, risk_amount, sl_points, quantity, lots,
+            "[%s] Sizing: risk=₹%.0f  sl_per_lot=%.2f  base=%d  adx=%.1f  lots=%d",
+            index, risk_budget, sl_per_lot, base_lots, adx, lots,
         )
         return quantity, lots
 
