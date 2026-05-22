@@ -45,7 +45,8 @@ LABEL_COL = "outcome"
 def load_and_prepare(csv_path: str) -> Tuple[pd.DataFrame, pd.Series]:
     """
     Loads the signal CSV, engineers features, returns (X, y).
-    Only rows where a trade was actually taken (trade_taken=1) are used.
+    Includes actual trades (trade_taken=1) AND shadow signals (trade_taken=0, outcome != -1).
+    Handles both old CSV format (conditions_met) and new format (conviction_score).
     """
     df = pd.read_csv(csv_path)
     logger.info("Loaded %d rows from %s", len(df), csv_path)
@@ -56,8 +57,27 @@ def load_and_prepare(csv_path: str) -> Tuple[pd.DataFrame, pd.Series]:
     df = df[df["outcome"] != -1].copy()
     n_actual = int((df["trade_taken"] == 1).sum())
     n_shadow = int((df["trade_taken"] == 0).sum())
-    logger.info("%d rows after filtering to trade_taken=1", n_actual)  # keep log label for compat
+    logger.info("%d rows after filtering (outcome != -1)", n_actual + n_shadow)
     logger.info("  (%d actual trades + %d shadow/counterfactual signals)", n_actual, n_shadow)
+
+    # Normalise column names: old CSV uses 'conditions_met' (3-5 scale),
+    # new format has both 'conditions_met' (3-5) and 'conviction_score' (0-100).
+    # If conditions_met is missing or is on the 0-100 scale, remap it.
+    if "conditions_met" not in df.columns or (df["conditions_met"].fillna(0) == 0).all():
+        if "conviction_score" in df.columns:
+            # Remap 0-100 → 3-5 to match old format
+            df["conditions_met"] = df["conviction_score"].apply(
+                lambda s: 5 if s >= 93 else (4 if s >= 80 else 3)
+            )
+            logger.info("  Mapped conviction_score (0-100) → conditions_met (3-5)")
+    elif "conditions_met" in df.columns:
+        # If values are on 0-100 scale (not 0-5), normalise them
+        cm_max = df["conditions_met"].max()
+        if cm_max > 10:
+            df["conditions_met"] = df["conditions_met"].apply(
+                lambda s: 5 if s >= 93 else (4 if s >= 80 else 3)
+            )
+            logger.info("  Normalised conditions_met from 0-100 → 3-5 scale")
 
     if df.empty:
         raise ValueError(

@@ -98,6 +98,8 @@ class TradingScheduler:
         self.profit_lock_done: bool = False          # 2 PM profit lock fires once per day
         self.shadow_signals_today: int = 0
         self.ml_override_trades_today: int = 0
+        self._pending_shadows: List[Dict[str, Any]] = []   # signals not traded, pending outcome
+        self._pending_signal: Optional[Dict[str, Any]] = None  # signal awaiting retest confirmation
         self.wins_today: int = 0
         self.losses_today: int = 0
         self.ml_skipped_today: int = 0
@@ -230,6 +232,10 @@ class TradingScheduler:
         except ImportError:
             send_hard_close = None
 
+        # Resolve pending signals / shadows before we lose LTP access
+        self._flush_pending_shadows()
+        self._pending_signal = None   # clear any unconfirmed retest
+
         if not self.open_positions:
             logger.info("Hard close: no open positions. %s", ist_now_str())
             return
@@ -360,9 +366,53 @@ class TradingScheduler:
         except ImportError:
             send_signal_fired = send_trade_entered = send_sl_hit = send_target_hit = None
 
+        # ── Resolve pending shadow signals from previous candles ───────────
+        self._resolve_shadow_signals()
+
         # ── Fetch VIX ──────────────────────────────────────────────────────
         vix = self.feed.get_vix()
         now_ist = datetime.now(IST)
+
+        # ── Retest entry: check pending signal from previous candle ────────
+        if self._pending_signal is not None:
+            ps    = self._pending_signal
+            index = ps["index"]
+            df_r  = self.feed.get_today_candles(index)
+            if df_r is not None and len(df_r) >= 2:
+                last_candle = df_r.iloc[-2]   # last fully closed candle
+                decision    = self._check_retest_live(last_candle)
+                if decision == "ENTER":
+                    self._pending_signal = None
+                    spot_r = float(last_candle["close"])
+                    best_r = {
+                        "index":          index,
+                        "result":         _types.SimpleNamespace(
+                            direction     = ps["direction"],
+                            conditions_met= ps["conditions_met"],
+                            details       = {**ps.get("signal_details", {}), "retest_entry": True},
+                        ),
+                        "df":             df_r,
+                        "spot":           spot_r,
+                        "pcr":            ps.get("pcr"),
+                        "conditions_met": ps["conditions_met"],
+                        "ml_override":    False,
+                    }
+                    logger.info(
+                        "[%s] %s RETEST ENTER | score=%d",
+                        index, ps["direction"], ps["conditions_met"],
+                    )
+                    self._enter_trade(best_r, vix=vix,
+                                      tg_entry=None)
+                elif decision == "CANCEL":
+                    logger.info("[%s] %s RETEST CANCELLED", index, ps["direction"])
+                    self._pending_signal = None
+                # else "WAIT" — carry forward to next candle
+            else:
+                # Can't get candles — cancel to avoid stale pending
+                self._pending_signal = None
+
+            if self._pending_signal is not None:
+                return   # still waiting — don't scan for new signals
 
         # ── Hourly heartbeat (fires once per hour: 10, 11, 12, 13, 14 IST) ──
         # Uses last_heartbeat_hour so a late-running cron still fires exactly once per hour.
@@ -402,34 +452,58 @@ class TradingScheduler:
                     logger.info("[%s] Profit lock: closed at ₹%.2f (entry ₹%.2f)",
                                 pos["index"], ltp, pos["entry_premium"])
 
-        # ── Monitor open positions (SL / target) ───────────────────────────
+        # ── Monitor open positions — ScaleOutPosition (identical to backtest) ─
+        from execution.scale_out import ScaleOutPosition
+
         for pos in list(self.open_positions):
             ltp = self.option_chain.get_ltp(pos["symbol"], pos["index"])
             if ltp is None:
                 continue
 
-            # Update trailing SL
-            pos["stop_loss"] = self.risk_manager.update_trailing_sl(ltp, pos["stop_loss"])
+            so: ScaleOutPosition = pos["scale_out"]
+            # Detect red candle (needed for T2 momentum check)
+            df_so   = self.feed.get_today_candles(pos["index"])
+            is_red  = False
+            if df_so is not None and len(df_so) >= 2:
+                last = df_so.iloc[-2]
+                is_red = float(last["close"]) < float(last["open"])
 
-            exit_reason = None
-            if ltp <= pos["stop_loss"]:
-                exit_reason = "Stop-loss"
-            elif ltp >= pos["target"]:
-                rr = round(
-                    (ltp - pos["entry_premium"])
-                    / (pos["entry_premium"] * self.risk_manager.stop_loss_pct), 2
-                )
-                exit_reason = f"Target ({rr:.1f}×)"
+            decision = so.check_exit(ltp, is_red)
 
-            if exit_reason:
-                pnl = self._close_position(pos, reason=exit_reason, exit_premium=ltp)
+            if not decision.should_exit:
+                continue
+
+            exit_px    = decision.exit_price_override if decision.exit_price_override > 0 else ltp
+            qty_closed = decision.lots_to_close * pos["lot_size"]
+
+            if decision.exit_all:
+                # Full close — log, record ML row
+                pnl = self._close_position(pos, reason=decision.exit_reason, exit_premium=exit_px)
                 self.open_positions.remove(pos)
                 self.risk_manager.open_positions -= 1
-                if exit_reason.startswith("Stop") and send_sl_hit:
+                is_sl = "SL" in decision.exit_reason or "HARD" in decision.exit_reason
+                if is_sl and send_sl_hit:
                     send_sl_hit(pos["index"], pos["symbol"], pnl,
                                 self.running_capital + self.risk_manager.daily_pnl)
                 elif send_target_hit:
                     send_target_hit(pos["index"], pos["symbol"], pnl,
+                                    self.running_capital + self.risk_manager.daily_pnl)
+            else:
+                # Partial exit — sell only qty_closed, keep position open
+                partial_pnl = (exit_px - pos["entry_premium"]) * qty_closed
+                self.risk_manager.record_trade_pnl(partial_pnl)
+                self.executor.place_sell_order(
+                    pos["symbol"], qty_closed, index=pos["index"], price=exit_px,
+                )
+                pos["quantity"] = so.lots_remaining * pos["lot_size"]
+                pos["lots"]     = so.lots_remaining
+                logger.info(
+                    "[%s] %s partial exit %d lots | ₹%.2f | reason=%s",
+                    pos["index"], pos["direction"], decision.lots_to_close,
+                    exit_px, decision.exit_reason,
+                )
+                if send_target_hit:
+                    send_target_hit(pos["index"], pos["symbol"], partial_pnl,
                                     self.running_capital + self.risk_manager.daily_pnl)
 
         # ── Risk gate — with one-time Telegram alerts ───────────────────────
@@ -506,8 +580,10 @@ class TradingScheduler:
                 )
 
             if not fired:
+                # Record near-miss for ML shadow training even when indicators don't fire
                 if result.conditions_met >= MIN_CONDITIONS - 1:
                     self.shadow_signals_today += 1  # near-miss WAIT
+                    self._record_shadow_signal(index, result, spot, pcr, vix)
                 try:
                     _exp_nm = self.option_chain._nearest_expiry(index)
                     from datetime import date as _date_nm
@@ -550,6 +626,7 @@ class TradingScheduler:
                     index, MAX_DAILY_TRADES, result.conditions_met,
                 )
                 self.shadow_signals_today += 1
+                self._record_shadow_signal(index, result, spot, pcr, vix)
                 continue
 
             # Global same-direction cap: skip if this direction already traded today
@@ -559,6 +636,7 @@ class TradingScheduler:
                     index, result.direction,
                 )
                 self.shadow_signals_today += 1
+                self._record_shadow_signal(index, result, spot, pcr, vix)
                 continue
 
             # Keep best signal (highest conditions_met)
@@ -573,9 +651,21 @@ class TradingScheduler:
                     "ml_override":    result.details.get("ml_override", False),
                 }
 
-        # ── Enter best trade ────────────────────────────────────────────────
-        if best:
-            self._enter_trade(best, vix=vix, tg_entry=send_trade_entered)
+        # ── Park best signal as pending — retest confirms on next candle ──
+        if best and self._pending_signal is None:
+            self._pending_signal = {
+                "index":          best["index"],
+                "direction":      best["result"].direction,
+                "conditions_met": best["conditions_met"],
+                "signal_details": best["result"].details,
+                "pcr":            best.get("pcr"),
+                "candles_waited": 0,
+                "saw_pullback":   False,
+            }
+            logger.info(
+                "[%s] %s PENDING retest | score=%d",
+                best["index"], best["result"].direction, best["conditions_met"],
+            )
 
     # ──────────────────────────────────────────────────────────────────────
     # Trade entry
@@ -587,6 +677,7 @@ class TradingScheduler:
         vix: Optional[float],
         tg_entry=None,
     ) -> None:
+        from execution.scale_out import ScaleOutPosition
         index  = best["index"]
         result = best["result"]
         spot   = best["spot"]
@@ -771,6 +862,12 @@ class TradingScheduler:
             "actual_risk":   actual_risk,
             "dte":           dte,
             "capital_before": round(self.running_capital, 2),
+            # ScaleOutPosition — same class used by backtest
+            "scale_out": ScaleOutPosition(
+                total_lots=lots,
+                entry_premium=premium,
+                direction=result.direction,
+            ),
         }
         self.open_positions.append(pos)
         self.risk_manager.open_positions += 1
@@ -913,43 +1010,51 @@ class TradingScheduler:
             vwap     = float(d.get("vwap", 0))
             fib_lvl  = float(d.get("fib_level") or 0)
 
+            cond_met = pos.get("conditions_met", 0)
             row = {
-                "signal_id":     uuid.uuid4().hex[:8].upper(),
-                "date":          pos["entry_time"].strftime("%Y-%m-%d"),
-                "time":          pos["entry_time"].strftime("%H:%M:%S"),
-                "index":         pos.get("index", ""),
-                "direction":     pos.get("direction", ""),
-                "direction_int": 1 if pos.get("direction") == "CALL" else 0,
-                "conditions_met": pos.get("conditions_met", 0),
-                "close":         round(close, 2),
-                "vwap":          round(vwap, 2),
-                "vwap_distance": round(close - vwap, 2),
-                "near_fib":      int(bool(d.get("near_fib"))),
-                "fib_label":     d.get("fib_label", ""),
-                "fib_level":     round(fib_lvl, 2),
-                "fib_distance":  round(abs(close - fib_lvl), 2) if fib_lvl else "",
-                "rsi":           round(float(d.get("rsi") or 50), 2),
-                "adx":           round(float(d.get("adx") or 0), 2),
-                "ema_bull":      int(bool(d.get("ema_bull"))),
-                "ema_bear":      int(bool(d.get("ema_bear"))),
-                "vol_spike":     int(bool(d.get("vol_spike"))),
-                "vol_ratio":     "",
-                "pcr":           d.get("pcr", ""),
-                "swing_high":    round(float(d.get("swing_high", 0)), 2),
-                "swing_low":     round(float(d.get("swing_low", 0)), 2),
-                "dte":           pos.get("dte", 1),
+                "signal_id":      uuid.uuid4().hex[:8].upper(),
+                "date":           pos["entry_time"].strftime("%Y-%m-%d"),
+                "time":           pos["entry_time"].strftime("%H:%M:%S"),
+                "index":          pos.get("index", ""),
+                "direction":      pos.get("direction", ""),
+                "direction_int":  1 if pos.get("direction") == "CALL" else 0,
+                # Both score fields — live engine uses 0-5 conditions count
+                "conviction_score": cond_met,
+                "conditions_met": cond_met,
+                "lot_size":       pos.get("lots", 1),
+                "day_quality":    "",   # not computed in live engine
+                "close":          round(close, 2),
+                "vwap":           round(vwap, 2),
+                "vwap_distance":  round(close - vwap, 2),
+                "ema_bull":       int(bool(d.get("ema_bull"))),
+                "ema_bear":       int(bool(d.get("ema_bear"))),
+                "ema_fast":       round(float(d.get("ema_fast") or 0), 2),
+                "ema_slow":       round(float(d.get("ema_slow") or 0), 2),
+                "near_fib":       int(bool(d.get("near_fib"))),
+                "fib_distance":   round(abs(close - fib_lvl), 4) / max(close, 1) if fib_lvl else 0.0,
+                "vol_spike":      int(bool(d.get("vol_spike"))),
+                "vol_ratio":      round(float(d.get("vol_ratio") or 1.0), 3),
+                "rsi":            round(float(d.get("rsi") or 50), 2),
+                "adx":            round(float(d.get("adx") or 0), 2),
+                "pcr":            d.get("pcr", ""),
+                "iv_rank":        "",
+                "pdh":            round(float(d.get("swing_high", 0)), 2),
+                "pdl":            round(float(d.get("swing_low", 0)), 2),
+                "weekly_high":    "",
+                "weekly_low":     "",
+                "dte":            pos.get("dte", 1),
                 "capital_before": pos.get("capital_before", round(self.running_capital, 2)),
-                "capital_used":  round(pos.get("entry_premium", 0) * pos.get("quantity", 0), 2),
-                "risk_amount":   round(pos.get("actual_risk", 0), 2),
-                "entry_premium": round(pos.get("entry_premium", 0), 2),
-                "stop_loss":     round(pos.get("stop_loss", 0), 2),
-                "target":        round(pos.get("target", 0), 2),
-                "exit_premium":  round(exit_premium, 2),
-                "pnl":           round(pnl, 2),
-                "pnl_pct":       round(pnl_pct, 2),
-                "exit_reason":   reason,
-                "trade_taken":   1,
-                "outcome":       1 if pnl > 0 else 0,
+                "capital_used":   round(pos.get("entry_premium", 0) * pos.get("quantity", 0), 2),
+                "risk_amount":    round(pos.get("actual_risk", 0), 2),
+                "entry_premium":  round(pos.get("entry_premium", 0), 2),
+                "stop_loss":      round(pos.get("stop_loss", 0), 2),
+                "target":         round(pos.get("target", 0), 2),
+                "exit_premium":   round(exit_premium, 2),
+                "pnl":            round(pnl, 2),
+                "pnl_pct":        round(pnl_pct, 2),
+                "exit_reason":    reason,
+                "trade_taken":    1,
+                "outcome":        1 if pnl > 0 else 0,
             }
 
             write_header = (
@@ -968,6 +1073,207 @@ class TradingScheduler:
         except Exception as exc:
             logger.warning("Could not write ML signal row: %s", exc)
 
+    # ──────────────────────────────────────────────────────────────────────
+    # Retest entry (live — mirrors backtest/_check_retest_entry)
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _check_retest_live(self, candle) -> str:
+        """
+        Returns "ENTER", "WAIT", or "CANCEL".
+        CALL: straight green → ENTER; red pullback then green → ENTER; 2nd red → CANCEL.
+        PUT:  mirror.  Cancel after 3 candles total.
+        """
+        pending   = self._pending_signal
+        is_green  = float(candle["close"]) >= float(candle["open"])
+        is_red    = not is_green
+        pending["candles_waited"] = pending.get("candles_waited", 0) + 1
+        direction = pending["direction"]
+
+        if pending["candles_waited"] > 3:
+            return "CANCEL"
+
+        if direction == "CALL":
+            if not pending.get("saw_pullback"):
+                if is_red:
+                    pending["saw_pullback"] = True
+                    return "WAIT"
+                else:
+                    return "ENTER"
+            else:
+                return "ENTER" if is_green else "CANCEL"
+        else:  # PUT
+            if not pending.get("saw_pullback"):
+                if is_green:
+                    pending["saw_pullback"] = True
+                    return "WAIT"
+                else:
+                    return "ENTER"
+            else:
+                return "ENTER" if is_red else "CANCEL"
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Shadow signal ML logging (trains ML on ALL signals, not just traded ones)
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _record_shadow_signal(
+        self,
+        index: str,
+        result,
+        spot: float,
+        pcr: Optional[float],
+        vix: Optional[float],
+    ) -> None:
+        """Record a signal that was evaluated but not traded, for future outcome resolution."""
+        try:
+            opt_type = "CE" if result.direction == "CALL" else "PE"
+            from data.option_chain import OptionChain as _OC
+            expiry  = self.option_chain._nearest_expiry(index)
+            strike  = self.option_chain.get_atm_strike(spot, index)
+            symbol  = self.option_chain.get_option_symbol(strike, opt_type, index, expiry)
+            premium = self.option_chain.get_ltp(symbol, index)
+            if premium is None or premium <= 0:
+                return
+
+            from datetime import date as _date
+            dte    = max((expiry - _date.today()).days, 1)
+            levels = self.risk_manager.compute_exit_levels(premium, conditions_met=result.conditions_met)
+
+            self._pending_shadows.append({
+                "signal_id":      uuid.uuid4().hex[:8].upper(),
+                "index":          index,
+                "direction":      result.direction,
+                "symbol":         symbol,
+                "entry_premium":  premium,
+                "stop_loss":      levels["stop_loss"],
+                "target":         levels["target"],
+                "candles_held":   0,
+                "entry_time":     datetime.now(IST),
+                "dte":            dte,
+                "conditions_met": result.conditions_met,
+                "signal_details": result.details,
+                "pcr":            pcr,
+                "vix":            vix,
+                "spot_at_entry":  spot,
+            })
+            logger.debug("[%s] Shadow signal recorded: %s prem=₹%.2f", index, result.direction, premium)
+        except Exception as exc:
+            logger.debug("Shadow signal record failed [%s]: %s", index, exc)
+
+    def _resolve_shadow_signals(self) -> None:
+        """Check pending shadow signals against current option LTP; write resolved ones to ML CSV."""
+        if not self._pending_shadows:
+            return
+        still_pending = []
+        for shadow in self._pending_shadows:
+            shadow["candles_held"] += 1
+            ltp = None
+            try:
+                ltp = self.option_chain.get_ltp(shadow["symbol"], shadow["index"])
+            except Exception:
+                pass
+
+            if ltp is None:
+                if shadow["candles_held"] < 4:
+                    still_pending.append(shadow)
+                # else drop — can't determine outcome (LTP unavailable for >4 candles)
+                continue
+
+            if ltp <= shadow["stop_loss"]:
+                self._write_shadow_ml_row(shadow, ltp, outcome=0, reason="shadow_SL")
+            elif ltp >= shadow["target"]:
+                self._write_shadow_ml_row(shadow, ltp, outcome=1, reason="shadow_TP")
+            elif shadow["candles_held"] >= 4:
+                outcome = 1 if ltp > shadow["entry_premium"] else 0
+                self._write_shadow_ml_row(shadow, ltp, outcome=outcome, reason="shadow_MAX_HOLD")
+            else:
+                still_pending.append(shadow)
+        self._pending_shadows = still_pending
+
+    def _write_shadow_ml_row(
+        self,
+        shadow: Dict[str, Any],
+        exit_premium: float,
+        outcome: int,
+        reason: str,
+    ) -> None:
+        """Write a resolved shadow signal to the ML CSV with trade_taken=0."""
+        try:
+            from backtest.engine import SIGNAL_CSV_COLUMNS
+            d     = shadow.get("signal_details", {})
+            close = float(d.get("close", shadow.get("spot_at_entry", 0)))
+            vwap  = float(d.get("vwap", 0))
+            pnl   = (exit_premium - shadow["entry_premium"]) * INDEX_CONFIG.get(
+                shadow["index"], INDEX_CONFIG["NIFTY"]
+            )["lot_size"]
+            pnl_pct = (exit_premium - shadow["entry_premium"]) / shadow["entry_premium"] * 100
+
+            row = {
+                "signal_id":      shadow["signal_id"],
+                "date":           shadow["entry_time"].strftime("%Y-%m-%d"),
+                "time":           shadow["entry_time"].strftime("%H:%M:%S"),
+                "index":          shadow["index"],
+                "direction":      shadow["direction"],
+                "direction_int":  1 if shadow["direction"] == "CALL" else 0,
+                "conviction_score": shadow["conditions_met"],
+                "conditions_met": shadow["conditions_met"],
+                "lot_size":       1,
+                "day_quality":    "",
+                "close":          round(close, 2),
+                "vwap":           round(vwap, 2),
+                "vwap_distance":  round(close - vwap, 2),
+                "ema_bull":       int(bool(d.get("ema_bull"))),
+                "ema_bear":       int(bool(d.get("ema_bear"))),
+                "ema_fast":       round(float(d.get("ema_fast") or 0), 2),
+                "ema_slow":       round(float(d.get("ema_slow") or 0), 2),
+                "near_fib":       int(bool(d.get("near_fib"))),
+                "fib_distance":   round(float(d.get("fib_distance") or 0), 4),
+                "vol_spike":      int(bool(d.get("vol_spike"))),
+                "vol_ratio":      round(float(d.get("vol_ratio") or 1), 3),
+                "rsi":            round(float(d.get("rsi") or 50), 2),
+                "adx":            round(float(d.get("adx") or 0), 2),
+                "pcr":            shadow.get("pcr", ""),
+                "iv_rank":        "",
+                "pdh":            "", "pdl":          "",
+                "weekly_high":    "", "weekly_low":   "",
+                "dte":            shadow["dte"],
+                "capital_before": round(self.running_capital, 2),
+                "capital_used":   0.0,
+                "risk_amount":    0.0,
+                "entry_premium":  round(shadow["entry_premium"], 2),
+                "stop_loss":      round(shadow["stop_loss"], 2),
+                "target":         round(shadow["target"], 2),
+                "exit_premium":   round(exit_premium, 2),
+                "pnl":            round(pnl, 2),
+                "pnl_pct":        round(pnl_pct, 2),
+                "exit_reason":    reason,
+                "trade_taken":    0,
+                "outcome":        outcome,
+            }
+            write_header = (
+                not os.path.exists(self._LIVE_ML_CSV)
+                or os.path.getsize(self._LIVE_ML_CSV) == 0
+            )
+            with open(self._LIVE_ML_CSV, "a", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=SIGNAL_CSV_COLUMNS, extrasaction="ignore")
+                if write_header:
+                    writer.writeheader()
+                writer.writerow(row)
+            logger.debug("Shadow ML row written (outcome=%d, reason=%s)", outcome, reason)
+        except Exception as exc:
+            logger.warning("Could not write shadow ML row: %s", exc)
+
+    def _flush_pending_shadows(self) -> None:
+        """Force-resolve all pending shadows at EOD (use current LTP or drop)."""
+        for shadow in self._pending_shadows:
+            try:
+                ltp = self.option_chain.get_ltp(shadow["symbol"], shadow["index"])
+                if ltp is not None:
+                    outcome = 1 if ltp > shadow["entry_premium"] else 0
+                    self._write_shadow_ml_row(shadow, ltp, outcome=outcome, reason="shadow_EOD")
+            except Exception:
+                pass
+        self._pending_shadows.clear()
+
     def _retrain_eod(self, trades_today: int, sync: bool = False) -> None:
         """Retrain the XGBoost model after market close.
 
@@ -975,8 +1281,20 @@ class TradingScheduler:
                       where the process exits immediately after run_once() returns).
         sync=False → runs in a background thread (local scheduler mode).
         """
-        if trades_today == 0:
-            logger.info("No trades today — skipping EOD ML retraining.")
+        # Flush any unresolved shadow signals before retraining
+        self._flush_pending_shadows()
+
+        shadow_rows = 0
+        try:
+            if os.path.exists(self._LIVE_ML_CSV):
+                import pandas as _pd
+                _df = _pd.read_csv(self._LIVE_ML_CSV)
+                shadow_rows = int((_df["trade_taken"] == 0).sum())
+        except Exception:
+            pass
+
+        if trades_today == 0 and shadow_rows == 0:
+            logger.info("No trades or shadow signals today — skipping EOD ML retraining.")
             return
 
         def _run() -> None:
@@ -1093,6 +1411,23 @@ class TradingScheduler:
 
             self.risk_manager.daily_pnl = float(s.get("daily_pnl", 0.0))
 
+            # Restore pending retest signal
+            self._pending_signal = s.get("pending_signal", None)
+
+            # Restore pending shadow signals (ISO string → datetime)
+            restored_shadows = []
+            for sh in s.get("pending_shadows", []):
+                sh = dict(sh)
+                if isinstance(sh.get("entry_time"), str):
+                    try:
+                        sh["entry_time"] = datetime.fromisoformat(sh["entry_time"])
+                        if sh["entry_time"].tzinfo is None:
+                            sh["entry_time"] = IST.localize(sh["entry_time"])
+                    except Exception:
+                        sh["entry_time"] = datetime.now(IST)
+                restored_shadows.append(sh)
+            self._pending_shadows = restored_shadows
+
             positions = []
             for p in s.get("open_positions", []):
                 if isinstance(p.get("entry_time"), str):
@@ -1102,6 +1437,18 @@ class TradingScheduler:
                             p["entry_time"] = IST.localize(p["entry_time"])
                     except Exception:
                         p["entry_time"] = datetime.now(IST)
+                # Restore ScaleOutPosition from saved dict
+                if isinstance(p.get("scale_out"), dict):
+                    try:
+                        p["scale_out"] = self._deserialize_scale_out(p["scale_out"])
+                    except Exception as _se:
+                        logger.warning("Could not restore scale_out: %s", _se)
+                        from execution.scale_out import ScaleOutPosition
+                        p["scale_out"] = ScaleOutPosition(
+                            total_lots=p.get("lots", 1),
+                            entry_premium=p.get("entry_premium", 100),
+                            direction=p.get("direction", "CALL"),
+                        )
                 positions.append(p)
             self.open_positions = positions
             self.risk_manager.open_positions = len(positions)
@@ -1116,6 +1463,44 @@ class TradingScheduler:
             logger.warning("State load failed: %s — starting fresh.", exc)
             self._reset_day()
 
+    @staticmethod
+    def _serialize_scale_out(so) -> dict:
+        """Convert ScaleOutPosition to a JSON-safe dict."""
+        return {
+            "total_lots":    so.total_lots,
+            "entry_premium": so.entry_premium,
+            "direction":     so.direction,
+            "t1_done":       so.t1_done,
+            "t2_done":       so.t2_done,
+            "t3_done":       so.t3_done,
+            "lots_remaining":so.lots_remaining,
+            "sl_price":      so.sl_price,
+            "peak_premium":  so.peak_premium,
+            "candles_held":  so.candles_held,
+            "flat_candles":  so.flat_candles,
+            "prev_premium":  so.prev_premium,
+        }
+
+    @staticmethod
+    def _deserialize_scale_out(d: dict):
+        """Reconstruct ScaleOutPosition from a saved dict."""
+        from execution.scale_out import ScaleOutPosition
+        so = ScaleOutPosition(
+            total_lots=d["total_lots"],
+            entry_premium=d["entry_premium"],
+            direction=d["direction"],
+        )
+        so.t1_done        = d.get("t1_done", False)
+        so.t2_done        = d.get("t2_done", False)
+        so.t3_done        = d.get("t3_done", False)
+        so.lots_remaining = d.get("lots_remaining", d["total_lots"])
+        so.sl_price       = d.get("sl_price", so.sl_price)
+        so.peak_premium   = d.get("peak_premium", d["entry_premium"])
+        so.candles_held   = d.get("candles_held", 0)
+        so.flat_candles   = d.get("flat_candles", 0)
+        so.prev_premium   = d.get("prev_premium", d["entry_premium"])
+        return so
+
     def _save_state(self, today) -> None:
         """Persist session state to state.json for the next candle run."""
         try:
@@ -1124,7 +1509,18 @@ class TradingScheduler:
                 p = dict(pos)
                 if isinstance(p.get("entry_time"), datetime):
                     p["entry_time"] = p["entry_time"].isoformat()
+                # Serialize ScaleOutPosition dataclass → plain dict
+                if "scale_out" in p and hasattr(p["scale_out"], "total_lots"):
+                    p["scale_out"] = self._serialize_scale_out(p["scale_out"])
                 positions.append(p)
+
+            # Serialize _pending_shadows (datetime → ISO string)
+            shadows_serial = []
+            for sh in self._pending_shadows:
+                s = dict(sh)
+                if isinstance(s.get("entry_time"), datetime):
+                    s["entry_time"] = s["entry_time"].isoformat()
+                shadows_serial.append(s)
 
             state = {
                 "date":                    str(today),
@@ -1137,6 +1533,8 @@ class TradingScheduler:
                 "profit_lock_done":        self.profit_lock_done,
                 "morning_pcr":             self.morning_pcr,
                 "open_positions":          positions,
+                "pending_signal":          self._pending_signal,
+                "pending_shadows":         shadows_serial,
                 "shadow_signals_today":      self.shadow_signals_today,
                 "ml_override_trades_today": self.ml_override_trades_today,
                 "wins_today":               self.wins_today,
@@ -1157,6 +1555,8 @@ class TradingScheduler:
     def _reset_day(self) -> None:
         self.risk_manager.reset_daily()
         self.open_positions.clear()
+        self._pending_shadows.clear()
+        self._pending_signal = None
         self.morning_pcr = {}
         self.daily_trades = {idx: 0 for idx in ACTIVE_INDICES}
         self.directions_traded_today = set()

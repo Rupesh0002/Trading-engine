@@ -95,9 +95,15 @@ _MAX_LOTS = {"NIFTY": 5, "BANKNIFTY": 8, "FINNIFTY": 6, "SENSEX": 5}
 # ── CSV columns ───────────────────────────────────────────────────────────────
 SIGNAL_CSV_COLUMNS = [
     "signal_id", "date", "time", "index", "direction", "direction_int",
-    "conviction_score", "lot_size", "day_quality",
-    "close", "vwap", "vwap_distance", "rsi", "adx", "ema_fast", "ema_slow",
-    "pcr", "iv_rank", "pdh", "pdl", "weekly_high", "weekly_low", "dte",
+    # conviction score (both names kept: conviction_score for display, conditions_met for ML)
+    "conviction_score", "conditions_met", "lot_size", "day_quality",
+    "close", "vwap", "vwap_distance",
+    # ML feature columns (must match ml/data_prep.py FEATURE_COLS)
+    "ema_bull", "ema_bear", "ema_fast", "ema_slow",
+    "near_fib", "fib_distance",
+    "vol_spike", "vol_ratio",
+    "rsi", "adx", "pcr",
+    "iv_rank", "pdh", "pdl", "weekly_high", "weekly_low", "dte",
     "capital_before", "capital_used", "risk_amount",
     "entry_premium", "stop_loss", "target",
     "exit_premium", "pnl", "pnl_pct", "exit_reason",
@@ -602,9 +608,25 @@ class BacktestEngine:
             if pending_signal is not None:
                 continue   # already waiting for a retest
 
-            mom        = conviction.momentum
+            mom         = conviction.momentum
             running_cap = round(capital + daily_pnl, 2)
-            signal_id  = uuid.uuid4().hex[:8].upper()
+            signal_id   = uuid.uuid4().hex[:8].upper()
+
+            # Compute ML feature columns from available indicators
+            _ema_bull   = int(mom.ema_fast > mom.ema_slow)
+            _ema_bear   = int(mom.ema_fast < mom.ema_slow)
+            _avg_vol    = sum(all_volumes) / len(all_volumes) if all_volumes else 1.0
+            _cur_vol    = float(candle["volume"])
+            _vol_ratio  = round(_cur_vol / _avg_vol, 3) if _avg_vol > 0 else 1.0
+            _vol_spike  = int(_vol_ratio >= 1.5)
+            _near_fib   = int(
+                (pdh is not None and abs(mom.close - pdh) / mom.close < 0.005)
+                or (pdl is not None and abs(mom.close - pdl) / mom.close < 0.005)
+            )
+            _fib_dist   = round(
+                min(abs(mom.close - pdh) if pdh else 9999,
+                    abs(mom.close - pdl) if pdl else 9999) / mom.close, 4
+            )
 
             # Build signal row with placeholder entry values (updated on actual entry)
             pending_entry_premium = self._simulate_entry_premium(
@@ -625,15 +647,25 @@ class BacktestEngine:
                     "direction":       conviction.direction,
                     "direction_int":   1 if conviction.direction == "CALL" else 0,
                     "conviction_score": conviction.total_score,
+                    # Map 0-100 score to 3-5 scale for ML compat with old CSV format:
+                    # 93+ → 5, 80-92 → 4, 65-79 → 3
+                    "conditions_met":  (5 if conviction.total_score >= 93 else
+                                        4 if conviction.total_score >= 80 else 3),
                     "lot_size":        1,          # updated on entry
                     "day_quality":     day_qual.label,
                     "close":           round(mom.close, 2),
                     "vwap":            round(mom.vwap_val, 2),
                     "vwap_distance":   round(mom.close - mom.vwap_val, 2),
-                    "rsi":             round(mom.rsi_val, 2),
-                    "adx":             round(mom.adx_val, 2),
+                    "ema_bull":        _ema_bull,
+                    "ema_bear":        _ema_bear,
                     "ema_fast":        round(mom.ema_fast, 2),
                     "ema_slow":        round(mom.ema_slow, 2),
+                    "near_fib":        _near_fib,
+                    "fib_distance":    _fib_dist,
+                    "vol_spike":       _vol_spike,
+                    "vol_ratio":       _vol_ratio,
+                    "rsi":             round(mom.rsi_val, 2),
+                    "adx":             round(mom.adx_val, 2),
                     "pcr":             conviction.options.pcr,
                     "iv_rank":         conviction.options.iv_rank,
                     "pdh":             round(pdh, 2) if pdh else "",
