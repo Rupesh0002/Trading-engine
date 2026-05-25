@@ -1,39 +1,15 @@
 name: Trading Engine
 
-# ── One cron per 15-min candle (IST = UTC+5:30) ─────────────────────────────
+# ── Single daily trigger — job loops through the full trading session ─────────
 on:
   schedule:
-    - cron: '45 3 * * 1-5'   # 09:15 IST — morning setup
-    - cron: '0 4 * * 1-5'    # 09:30 IST
-    - cron: '15 4 * * 1-5'   # 09:45 IST
-    - cron: '30 4 * * 1-5'   # 10:00 IST
-    - cron: '45 4 * * 1-5'   # 10:15 IST
-    - cron: '0 5 * * 1-5'    # 10:30 IST
-    - cron: '15 5 * * 1-5'   # 10:45 IST
-    - cron: '30 5 * * 1-5'   # 11:00 IST
-    - cron: '45 5 * * 1-5'   # 11:15 IST
-    - cron: '0 6 * * 1-5'    # 11:30 IST
-    - cron: '15 6 * * 1-5'   # 11:45 IST
-    - cron: '30 6 * * 1-5'   # 12:00 IST
-    - cron: '45 6 * * 1-5'   # 12:15 IST
-    - cron: '0 7 * * 1-5'    # 12:30 IST
-    - cron: '15 7 * * 1-5'   # 12:45 IST
-    - cron: '30 7 * * 1-5'   # 13:00 IST
-    - cron: '45 7 * * 1-5'   # 13:15 IST
-    - cron: '0 8 * * 1-5'    # 13:30 IST
-    - cron: '15 8 * * 1-5'   # 13:45 IST
-    - cron: '30 8 * * 1-5'   # 14:00 IST
-    - cron: '45 8 * * 1-5'   # 14:15 IST
-    - cron: '0 9 * * 1-5'    # 14:30 IST
-    - cron: '15 9 * * 1-5'   # 14:45 IST
-    - cron: '30 9 * * 1-5'   # 15:00 IST — hard close
-    - cron: '45 9 * * 1-5'   # 15:15 IST — day summary
+    - cron: '45 3 * * 1-5'   # 09:15 IST (UTC+5:30) — Mon–Fri
   workflow_dispatch:          # manual trigger for testing
 
 jobs:
-  candle-check:
+  trading-session:
     runs-on: ubuntu-latest
-    timeout-minutes: 10       # each run must finish in 10 min
+    timeout-minutes: 390      # 6.5 h — covers 09:15–15:30 IST with buffer
     permissions:
       contents: write
 
@@ -52,7 +28,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run candle check
+      - name: Configure git
+        run: |
+          git config user.name "Trading Bot"
+          git config user.email "bot@noreply.github.com"
+
+      - name: Run full trading session
         env:
           # ── Secrets ───────────────────────────────────────────────
           KITE_API_KEY:               ${{ secrets.KITE_API_KEY }}
@@ -143,14 +124,41 @@ jobs:
           BACKTEST_START:             "2023-01-01"
           BACKTEST_END:               "2026-04-30"
           BACKTEST_VIX:               "15.0"
-        run: python main.py --candle
+          MAX_LOTS_CAP:               "3"
+          LOT_SIZING_SL_PCT:          "0.12"
+          REQUIRE_PREMIUM_DAY:        "True"
+          NIFTY_STRIKE_STEP:          "50"
 
-      - name: Commit state and logs
         run: |
-          git config user.name "Trading Bot"
-          git config user.email "bot@noreply.github.com"
-          git pull --rebase origin main || true
-          git add state.json logs/trade_log.csv logs/signal_log.csv ml/models/pattern_memory.json ml/models/xgboost_model.pkl || true
-          git diff --staged --quiet || git commit -m "candle: $(TZ='Asia/Kolkata' date '+%Y-%m-%d %H:%M IST')"
-          git push || true
-        continue-on-error: true
+          while true; do
+            echo "── Candle $(TZ='Asia/Kolkata' date '+%H:%M IST') ──────────────────────────"
+            python3 main.py --candle
+
+            # ── Commit state + logs after every candle ─────────────
+            git pull --rebase origin main || true
+            git add state.json logs/trade_log.csv logs/signal_log.csv \
+                      ml/models/pattern_memory.json ml/models/xgboost_model.pkl || true
+            git diff --staged --quiet || \
+              git commit -m "candle: $(TZ='Asia/Kolkata' date '+%Y-%m-%d %H:%M IST')"
+            git push || true
+
+            # ── Exit after 15:15 IST (day summary already sent) ────
+            IST_HHMM=$(TZ='Asia/Kolkata' date +%H%M)
+            if [ "$IST_HHMM" -ge "1515" ]; then
+              echo "Session complete at $(TZ='Asia/Kolkata' date '+%H:%M IST'). Exiting."
+              break
+            fi
+
+            # ── Sleep until next 15-min candle boundary ─────────────
+            python3 - <<'PYEOF'
+import datetime, time, pytz
+ist = pytz.timezone('Asia/Kolkata')
+now = datetime.datetime.now(ist)
+mins_past = now.minute % 15
+secs_wait = (15 - mins_past) * 60 - now.second
+secs_wait = max(secs_wait, 30)   # minimum 30s gap
+print(f"Sleeping {secs_wait}s until next candle boundary.")
+time.sleep(secs_wait)
+PYEOF
+
+          done
