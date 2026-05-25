@@ -1,6 +1,6 @@
 {
   "date": "2026-05-25",
-  "last_run_time": "13:45",
+  "last_run_time": "14:00",
   "running_capital": 100000.0,
   "daily_pnl": 0.0,
   "paper_mode": true,
@@ -10,12 +10,12 @@
     "SENSEX": 0
   },
   "directions_traded_today": [],
-  "profit_lock_done": false,
+  "profit_lock_done": true,
   "morning_pcr": {},
   "open_positions": [],
   "pending_signal": null,
   "pending_shadows": [],
-  "shadow_signals_today": 14,
+  "shadow_signals_today": 17,
   "ml_override_trades_today": 0,
   "wins_today": 0,
   "losses_today": 0,
@@ -23,5 +23,5 @@
   "eod_sent": false,
   "vix_alert_sent": false,
   "loss_limit_alert_sent": false,
-  "last_heartbeat_hour": 13
+  "last_heartbeat_hour": 14
 }
