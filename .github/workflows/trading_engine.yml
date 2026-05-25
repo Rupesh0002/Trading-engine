@@ -127,7 +127,6 @@ jobs:
           MAX_LOTS_CAP:               "3"
           LOT_SIZING_SL_PCT:          "0.12"
           REQUIRE_PREMIUM_DAY:        "True"
-          NIFTY_STRIKE_STEP:          "50"
 
         run: |
           while true; do
