@@ -148,7 +148,7 @@ jobs:
               break
             fi
 
-            # ── Sleep until next 15-min candle boundary ─────────────
-            python3 -c 'import datetime,time,pytz; ist=pytz.timezone("Asia/Kolkata"); now=datetime.datetime.now(ist); m=now.minute%15; s=max((15-m)*60-now.second,30); print(f"Sleeping {s}s until next candle."); time.sleep(s)'
+            # ── Sleep until next 5-min boundary (position monitoring every 5 min) ──
+            python3 -c 'import datetime,time,pytz; ist=pytz.timezone("Asia/Kolkata"); now=datetime.datetime.now(ist); m=now.minute%5; s=max((5-m)*60-now.second,30); print(f"Sleeping {s}s until next 5-min check."); time.sleep(s)'
 
           done
