@@ -150,15 +150,6 @@ jobs:
             fi
 
             # ── Sleep until next 15-min candle boundary ─────────────
-            python3 - <<'PYEOF'
-import datetime, time, pytz
-ist = pytz.timezone('Asia/Kolkata')
-now = datetime.datetime.now(ist)
-mins_past = now.minute % 15
-secs_wait = (15 - mins_past) * 60 - now.second
-secs_wait = max(secs_wait, 30)   # minimum 30s gap
-print(f"Sleeping {secs_wait}s until next candle boundary.")
-time.sleep(secs_wait)
-PYEOF
+            python3 -c 'import datetime,time,pytz; ist=pytz.timezone("Asia/Kolkata"); now=datetime.datetime.now(ist); m=now.minute%15; s=max((15-m)*60-now.second,30); print(f"Sleeping {s}s until next candle."); time.sleep(s)'
 
           done
