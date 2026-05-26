@@ -133,24 +133,23 @@ jobs:
         run: |
           while true; do
             echo "── Candle $(TZ='Asia/Kolkata' date '+%H:%M IST') ──────────────────────────"
-            python3 main.py --candle
+            python3 main.py --short-paper
 
             # ── Commit state + logs after every candle ─────────────
             git pull --rebase origin main || true
-            git add state.json logs/trade_log.csv logs/signal_log.csv \
-                      ml/models/pattern_memory.json ml/models/xgboost_model.pkl || true
+            git add state_short.json logs/short_paper_trades.csv || true
             git diff --staged --quiet || \
               git commit -m "candle: $(TZ='Asia/Kolkata' date '+%Y-%m-%d %H:%M IST')"
             git push || true
 
-            # ── Exit after 15:15 IST (day summary already sent) ────
+            # ── Exit after 14:35 IST (short engine closes at 14:30) ─
             IST_HHMM=$(TZ='Asia/Kolkata' date +%H%M)
-            if [ "$IST_HHMM" -ge "1515" ]; then
+            if [ "$IST_HHMM" -ge "1435" ]; then
               echo "Session complete at $(TZ='Asia/Kolkata' date '+%H:%M IST'). Exiting."
               break
             fi
 
-            # ── Sleep until next 5-min boundary (position monitoring every 5 min) ──
+            # ── Sleep until next 5-min boundary ────────────────────
             python3 -c 'import datetime,time,pytz; ist=pytz.timezone("Asia/Kolkata"); now=datetime.datetime.now(ist); m=now.minute%5; s=max((5-m)*60-now.second,30); print(f"Sleeping {s}s until next 5-min check."); time.sleep(s)'
 
           done

@@ -46,6 +46,14 @@ def main() -> None:
                         help="Run V3 backtest (4-indicator signal + dynamic exit, engine_v2/)")
     parser.add_argument("--v3-ml", action="store_true",
                         help="Run V3 backtest then simulate ML Phase 2 filtering")
+    parser.add_argument("--v4",      action="store_true",
+                        help="Run engine_v3 backtest (ORB + PDH/PDL + VWAP + SMC · options)")
+    parser.add_argument("--spread",  action="store_true",
+                        help="Use vertical spread mode (buy ATM + sell OTM) to reduce theta")
+    parser.add_argument("--short",   action="store_true",
+                        help="Sell options (CALL signal→sell PUT, PUT signal→sell CALL)")
+    parser.add_argument("--capital", dest="capital", type=float, default=0,
+                        help="Override trading capital (e.g. 300000)")
     args = parser.parse_args()
 
     from_date = args.from_date or BACKTEST_START
@@ -58,6 +66,12 @@ def main() -> None:
     print("─" * 60)
     if getattr(args, "v3_ml", False):
         print("  BACKTEST V3 + ML PHASE 2 SIMULATION")
+    elif args.short:
+        print("  ENGINE V3 SHORT OPTIONS  (sell opposite-side ATM on signal)")
+    elif args.v4:
+        mode = "SPREAD (buy ATM + sell OTM)" if args.spread else "Naked ATM"
+        cap  = f"₹{args.capital:,.0f}" if args.capital else f"₹{TRADING_CAPITAL:,.0f}"
+        print(f"  ENGINE V3 BACKTEST  (ORB + PDH/PDL + VWAP · {mode} · {cap} capital)")
     elif args.v3:
         print("  BACKTEST V3  (4-Indicator Signal + Dynamic Exit)")
     elif args.v2:
@@ -78,6 +92,11 @@ def main() -> None:
 
     if getattr(args, "v3_ml", False):
         _run_v3_ml(kite, index, from_date, to_date)
+    elif args.short:
+        _run_short(kite, index, from_date, to_date, capital=args.capital)
+    elif args.v4:
+        _run_v4(kite, index, from_date, to_date,
+                spread=args.spread, capital=args.capital)
     elif args.v3:
         _run_v3(kite, index, from_date, to_date)
     elif args.v2:
@@ -86,6 +105,152 @@ def main() -> None:
         _run_simple(kite, index, from_date, to_date)
     else:
         _run_conviction(kite, index, from_date, to_date)
+
+
+# ── engine_v3: Short options (sell opposite-side ATM on signal) ──────────────
+
+def _run_short(kite, index: str, from_date: str, to_date: str,
+               capital: float = 0) -> None:
+    from engine_v3.backtest_short import ShortOptionsEngine
+    engine  = ShortOptionsEngine(kite, index=index, capital=capital)
+    results = engine.run(from_date=from_date, to_date=to_date)
+
+    print()
+    print(results.summary())
+    print()
+
+    if not results.trades:
+        print("  No trades generated.")
+        print()
+        return
+
+    print("  TRADE LOG")
+    print("  " + "─" * 155)
+    print(
+        f"  {'#':>3}  {'Date':<12} {'Setup':<8} {'Dir':<5} {'Bias':<8} "
+        f"{'SigT':<8} {'EntT':<8} "
+        f"{'EntSpot':>9} {'EntPrem':>8} {'ExPrem':>8} "
+        f"{'Lots':>4} {'Qty':>5} "
+        f"{'GrossP&L':>10} {'NetP&L':>10} {'%':>7}  Reason"
+    )
+    print("  " + "─" * 155)
+    for i, t in enumerate(results.trades, 1):
+        print(
+            f"  {i:>3}  {t.date:<12} {t.setup:<8} {t.direction:<5} {t.bias:<8} "
+            f"{t.signal_time:<8} {t.entry_time:<8} "
+            f"{t.entry_spot:>9.2f} {t.entry_premium:>8.2f} {t.exit_premium:>8.2f} "
+            f"{t.lots:>4} {t.quantity:>5} "
+            f"{t.gross_pnl:>+10.2f} {t.net_pnl:>+10.2f} {t.pnl_pct:>+6.1f}%  {t.exit_reason}"
+        )
+    print("  " + "─" * 155)
+
+    sl_t = [t for t in results.trades if "SL"    in t.exit_reason]
+    tp_t = [t for t in results.trades if "TP"    in t.exit_reason]
+    hc_t = [t for t in results.trades if "close" in t.exit_reason.lower()
+                                      or "limit" in t.exit_reason.lower()]
+
+    call_t = [t for t in results.trades if t.direction == "CALL"]
+    put_t  = [t for t in results.trades if t.direction == "PUT"]
+
+    print(f"\n  DIRECTION:")
+    for lst, lbl in [(call_t, "CALL (sold PUT)"), (put_t, "PUT (sold CALL)")]:
+        if lst:
+            wr = sum(1 for t in lst if t.net_pnl > 0) / len(lst) * 100
+            print(f"  {lbl:<18}: {len(lst):>3} | Win {wr:.1f}% | "
+                  f"Net ₹{sum(t.net_pnl for t in lst):+,.0f}")
+
+    print(f"\n  EXIT REASONS:  Short-SL={len(sl_t)}  Short-TP={len(tp_t)}  "
+          f"Hard/DailyLim={len(hc_t)}")
+
+    print(f"\n  PER-SETUP WIN RATES:")
+    for sname in ("ORB", "PDH_PDL", "VWAP", "SMC"):
+        st = [t for t in results.trades if t.setup == sname]
+        if st:
+            wr  = sum(1 for t in st if t.net_pnl > 0) / len(st) * 100
+            sl  = sum(1 for t in st if "SL" in t.exit_reason)
+            tp  = sum(1 for t in st if "TP" in t.exit_reason)
+            hc  = sum(1 for t in st if "close" in t.exit_reason.lower())
+            print(f"  {sname:<8}: {len(st):>3} trades | Win {wr:.1f}% | "
+                  f"SL={sl}  TP={tp}  Hard={hc} | "
+                  f"Net ₹{sum(t.net_pnl for t in st):+,.0f}")
+
+    print(f"\n  CSV: {results.csv_path}")
+    print()
+
+
+# ── engine_v3: ORB + PDH/PDL + VWAP + SMC (options) ─────────────────────────
+
+def _run_v4(kite, index: str, from_date: str, to_date: str,
+            spread: bool = False, capital: float = 0) -> None:
+    from engine_v3.backtest import V3BacktestEngine
+    engine  = V3BacktestEngine(kite, index=index, spread=spread, capital=capital)
+    results = engine.run(from_date=from_date, to_date=to_date)
+
+    print()
+    print(results.summary(from_date, to_date))
+    print()
+
+    if not results.trades:
+        print("  No trades generated.")
+        print()
+        return
+
+    print("  TRADE LOG")
+    print("  " + "─" * 178)
+    print(
+        f"  {'#':>3}  {'Date':<12} {'Setup':<8} {'Dir':<5} {'Bias':<8} "
+        f"{'SigT':<8} {'EntT':<8} "
+        f"{'EntSpot':>9} {'SL':>9} {'TP':>9} "
+        f"{'EntPrem':>8} {'ExPrem':>8} "
+        f"{'P1Px':>7} {'P2Px':>7} "
+        f"{'Lots':>4} {'NetP&L':>10} {'%':>7}  Reason"
+    )
+    print("  " + "─" * 178)
+    for i, t in enumerate(results.trades, 1):
+        p1 = f"{t.partial1_px:>7.1f}" if t.partial1_lots > 0 else "      —"
+        p2 = f"{t.partial2_px:>7.1f}" if t.partial2_lots > 0 else "      —"
+        print(
+            f"  {i:>3}  {t.date:<12} {t.setup:<8} {t.direction:<5} {t.bias:<8} "
+            f"{t.signal_time:<8} {t.entry_time:<8} "
+            f"{t.entry_spot:>9.2f} {t.sl_spot:>9.2f} {t.tp_spot:>9.2f} "
+            f"{t.entry_premium:>8.2f} {t.exit_premium:>8.2f} "
+            f"{p1} {p2} "
+            f"{t.lots:>4} {t.net_pnl:>+10.2f} {t.pnl_pct:>+6.1f}%  {t.exit_reason}"
+        )
+    print("  " + "─" * 178)
+
+    call_t = [t for t in results.trades if t.direction == "CALL"]
+    put_t  = [t for t in results.trades if t.direction == "PUT"]
+    sl_t   = [t for t in results.trades if "SL"      in t.exit_reason]
+    tp_t   = [t for t in results.trades if "TP"      in t.exit_reason or "VWAP" in t.exit_reason]
+    nm_t   = [t for t in results.trades if "No-move" in t.exit_reason]
+    tr_t   = [t for t in results.trades if "Trail"   in t.exit_reason]
+    hc_t   = [t for t in results.trades if "close"   in t.exit_reason.lower()
+                                        or "limit"   in t.exit_reason.lower()]
+
+    print(f"\n  DIRECTION:")
+    for lst, lbl in [(call_t, "CALL"), (put_t, "PUT")]:
+        if lst:
+            wr = sum(1 for t in lst if t.net_pnl > 0) / len(lst) * 100
+            print(f"  {lbl:<5}: {len(lst):>3} | Win {wr:.1f}% | "
+                  f"Net ₹{sum(t.net_pnl for t in lst):+,.0f}")
+
+    print(f"\n  EXIT REASONS:  SL={len(sl_t)}  TP/VWAP={len(tp_t)}  "
+          f"Trail={len(tr_t)}  No-move={len(nm_t)}  Hard={len(hc_t)}")
+
+    print(f"\n  PER-SETUP WIN RATES:")
+    for sname in ("ORB", "PDH_PDL", "VWAP", "SMC"):
+        st = [t for t in results.trades if t.setup == sname]
+        if st:
+            wr = sum(1 for t in st if t.net_pnl > 0) / len(st) * 100
+            nm = sum(1 for t in st if "No-move" in t.exit_reason)
+            sl = sum(1 for t in st if "SL" in t.exit_reason)
+            print(f"  {sname:<8}: {len(st):>3} trades | Win {wr:.1f}% | "
+                  f"SL={sl}  No-move={nm} | "
+                  f"Net ₹{sum(t.net_pnl for t in st):+,.0f}")
+
+    print(f"\n  CSV: {results.csv_path}")
+    print()
 
 
 # ── Simplified 2-setup backtest ───────────────────────────────────────────────

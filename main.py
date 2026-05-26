@@ -64,9 +64,15 @@ def main() -> None:
         "--summary", action="store_true",
         help="Print full trade statistics from trade log",
     )
+    parser.add_argument(
+        "--short-paper", action="store_true", dest="short_paper",
+        help="Run one short-options paper trade candle (engine_v3/live_short.py)",
+    )
     args = parser.parse_args()
 
-    if args.candle:
+    if args.short_paper:
+        _run_short_paper_candle()
+    elif args.candle:
         _run_candle()
     elif args.backtest:
         _run_backtest(
@@ -144,6 +150,32 @@ def _write_fallback_state(error: str = "") -> None:
         logger.info("[STATE] Fallback state.json written to %s", state_path)
     except Exception as write_exc:
         logger.error("[STATE] Could not write fallback state.json: %s", write_exc)
+
+
+# ── Short-options paper trade candle (engine_v3) ──────────────────────────────
+
+def _run_short_paper_candle() -> None:
+    """
+    Single-candle execution for the short-options paper trade engine.
+    Loads state_short.json → checks one candle → saves state_short.json → exits.
+    """
+    validate_settings()
+
+    from database.connection import init_db
+    init_db()
+
+    try:
+        from config.auth import get_kite_client
+        kite = get_kite_client()
+        from engine_v3.live_short import ShortLiveEngine
+        ShortLiveEngine(kite).run_candle()
+    except Exception as exc:
+        logger.error("Short-paper candle failed: %s", exc, exc_info=True)
+        try:
+            from telegram_alerts import _send
+            _send(f"SHORT-PAPER ERROR: {exc}")
+        except Exception:
+            pass
 
 
 # ── Scheduler (default mode) ───────────────────────────────────────────────────
