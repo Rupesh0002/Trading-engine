@@ -1347,14 +1347,15 @@ class TradingScheduler:
 
         hour_min = now.hour * 60 + now.minute
 
-        try:
-            if 9 * 60 <= hour_min < 9 * 60 + 30:
-                logger.info("── Morning Setup (candle mode) ── %s", ist_now_str())
-                self._morning_setup()
-                if self._is_new_day:
-                    self._notify_engine_start(today, now)
+        # On first run of the day, always do morning setup + notify regardless of
+        # how late GH Actions starts (cron can lag 30+ min past the 9:15 trigger).
+        if self._is_new_day:
+            logger.info("── Morning Setup (candle mode) ── %s", ist_now_str())
+            self._morning_setup()
+            self._notify_engine_start(today, now)
 
-            elif 10 * 60 <= hour_min < 15 * 60:
+        try:
+            if 10 * 60 <= hour_min < 15 * 60:
                 self._candle_cycle()
 
             elif 15 * 60 <= hour_min < 15 * 60 + 30:
