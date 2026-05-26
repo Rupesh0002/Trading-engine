@@ -54,6 +54,8 @@ def main() -> None:
                         help="Sell options (CALL signal→sell PUT, PUT signal→sell CALL)")
     parser.add_argument("--capital", dest="capital", type=float, default=0,
                         help="Override trading capital (e.g. 300000)")
+    parser.add_argument("--orb",   action="store_true",
+                        help="Run ORB (Opening Range Breakout) backtest")
     args = parser.parse_args()
 
     from_date = args.from_date or BACKTEST_START
@@ -76,6 +78,8 @@ def main() -> None:
         print("  BACKTEST V3  (4-Indicator Signal + Dynamic Exit)")
     elif args.v2:
         print("  BACKTEST V2  (Gap & Go  +  Dynamic Trailing Exit)")
+    elif args.orb:
+        print("  ORB BACKTEST  (Opening Range Breakout)")
     elif args.simple:
         print("  SIMPLIFIED BACKTEST  (Gap & Go  +  11AM Trend)")
     else:
@@ -101,6 +105,8 @@ def main() -> None:
         _run_v3(kite, index, from_date, to_date)
     elif args.v2:
         _run_v2(kite, index, from_date, to_date)
+    elif args.orb:
+        _run_orb(kite, index, from_date, to_date)
     elif args.simple:
         _run_simple(kite, index, from_date, to_date)
     else:
@@ -175,6 +181,57 @@ def _run_short(kite, index: str, from_date: str, to_date: str,
                   f"Net ₹{sum(t.net_pnl for t in st):+,.0f}")
 
     print(f"\n  CSV: {results.csv_path}")
+    print()
+
+
+# ── ORB backtest ──────────────────────────────────────────────────────────────
+
+def _run_orb(kite, index: str, from_date: str, to_date: str) -> None:
+    from backtest.orb_engine import ORBBacktestEngine
+    engine  = ORBBacktestEngine(kite, index=index)
+    results = engine.run(from_date=from_date, to_date=to_date)
+
+    print()
+    print(results.summary())
+    print()
+
+    if results.trades:
+        print("  TRADE LOG")
+        print("  " + "─" * 130)
+        print(
+            f"  {'#':>3}  {'Date':<12} {'Dir':<5} {'BrkTime':<9} "
+            f"{'OR_H':>8} {'OR_L':>8} {'Rng%':>5} "
+            f"{'EntPrem':>8} {'ExPrem':>8} "
+            f"{'Lots':>5} {'NetP&L':>10} {'%':>7}  Reason"
+        )
+        print("  " + "─" * 130)
+        for i, t in enumerate(results.trades, 1):
+            print(
+                f"  {i:>3}  {t.date:<12} {t.direction:<5} {t.breakout_time:<9} "
+                f"{t.or_high:>8.2f} {t.or_low:>8.2f} {t.or_range_pct*100:>5.2f} "
+                f"{t.entry_premium:>8.2f} {t.exit_premium:>8.2f} "
+                f"{t.lots:>5} {t.net_pnl:>+10.2f} {t.pnl_pct:>+6.1f}%  {t.exit_reason}"
+            )
+        print("  " + "─" * 130)
+
+        call_t = [t for t in results.trades if t.direction == "CALL"]
+        put_t  = [t for t in results.trades if t.direction == "PUT"]
+        sl_t   = [t for t in results.trades if "SL" in t.exit_reason]
+        tgt_t  = [t for t in results.trades if "Target" in t.exit_reason]
+        hc_t   = [t for t in results.trades if "Hard" in t.exit_reason]
+
+        print(f"\n  DIRECTION SPLIT:")
+        print(f"  CALL : {len(call_t)} trades | "
+              f"Win {sum(1 for t in call_t if t.net_pnl>0)/len(call_t)*100:.1f}% | "
+              f"Net ₹{sum(t.net_pnl for t in call_t):+,.0f}" if call_t else "  CALL : 0 trades")
+        print(f"  PUT  : {len(put_t)} trades | "
+              f"Win {sum(1 for t in put_t if t.net_pnl>0)/len(put_t)*100:.1f}% | "
+              f"Net ₹{sum(t.net_pnl for t in put_t):+,.0f}" if put_t else "  PUT  : 0 trades")
+        print(f"\n  EXIT REASONS:  SL={len(sl_t)}  Target={len(tgt_t)}  HardClose={len(hc_t)}")
+        print(f"\n  Signal CSV: {results.csv_path}")
+    else:
+        print("  No ORB trades generated.")
+        print("  Possible cause: all days had OR range outside [0.3%, 2.0%].")
     print()
 
 
@@ -287,7 +344,6 @@ def _run_simple(kite, index: str, from_date: str, to_date: str) -> None:
             )
         print("  " + "─" * 136)
 
-        # Per-setup breakdown
         gap_t  = [t for t in results.trades if t.setup_type == "GAP_GO"]
         trnd_t = [t for t in results.trades if t.setup_type == "TREND_11AM"]
         print(f"\n  TOTAL  : {results.total_trades} trades | "
@@ -367,14 +423,12 @@ def _run_v3_ml(kite, index: str, from_date: str, to_date: str) -> None:
     print(f"  Phase 1 complete: {results.total_trades} trades collected.")
     print()
 
-    # ── Phase 1 summary ──────────────────────────────────────────────────────
     print("  ─────────────────────────────────────────────────────")
     print("  PHASE 1 BASELINE (no ML)")
     print("  ─────────────────────────────────────────────────────")
     print(results.summary())
     print()
 
-    # ── ML Phase 2 simulation ────────────────────────────────────────────────
     print("  Running ML Phase 2 simulation (XGBoost, online learning)...")
     sim = engine.simulate_ml_phase2(results.trades)
 

@@ -166,6 +166,28 @@ def send_morning_bias(index: str, pcr: float, bias: str) -> None:
     )
 
 
+def send_orb_signal(
+    index: str,
+    direction: str,
+    or_high: float,
+    or_low: float,
+    breakout_price: float,
+    paper: bool = True,
+) -> None:
+    arrow  = "🟢" if direction == "CALL" else "🔴"
+    mode   = "📄 PAPER" if paper else "💰 LIVE"
+    side   = "above OR High" if direction == "CALL" else "below OR Low"
+    ref    = or_high if direction == "CALL" else or_low
+    _send(
+        f"{arrow} <b>ORB Breakout: {direction}  [{mode}]</b>\n"
+        f"Index  : {index}\n"
+        f"Closed {side}\n"
+        f"OR High : {or_high:.2f}  |  OR Low : {or_low:.2f}\n"
+        f"Break @ : {breakout_price:.2f}  (ref {ref:.2f})\n"
+        f"──────────────────"
+    )
+
+
 def send_signal_fired(
     index: str,
     direction: str,

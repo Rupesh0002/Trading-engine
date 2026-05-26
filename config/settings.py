@@ -83,6 +83,13 @@ MAX_DAILY_TRADES     = int(os.getenv("MAX_DAILY_TRADES", 1))
 MAX_DAILY_TRADES_OTM = int(os.getenv("MAX_DAILY_TRADES_OTM", 2))  # hard cap; 2nd trade only for 5/5 signals
 VWAP_ZONE_PCT        = float(os.getenv("VWAP_ZONE_PCT", 0.20))  # % of price; replaces fixed VWAP_ZONE_POINTS
 
+# ── Opening Range Breakout (ORB) ─────────────────────────────────────────────
+ORB_ENABLED          = os.getenv("ORB_ENABLED", "True") == "True"
+ORB_MIN_RANGE_PCT    = float(os.getenv("ORB_MIN_RANGE_PCT", 0.003))  # skip if OR < 0.3% (choppy open)
+ORB_MAX_RANGE_PCT    = float(os.getenv("ORB_MAX_RANGE_PCT", 0.020))  # skip if OR > 2.0% (gap day)
+ORB_BUFFER_PCT       = float(os.getenv("ORB_BUFFER_PCT",    0.001))  # 0.1% close-beyond-OR confirmation
+ORB_TRADE_END        = os.getenv("ORB_TRADE_END", "13:00")           # no new ORB entries after 1 PM
+
 # ── Market filters ───────────────────────────────────────────────────────────
 PCR_MIN              = float(os.getenv("PCR_MIN", 0.6))   # kept for backcompat
 PCR_MAX              = float(os.getenv("PCR_MAX", 1.5))   # kept for backcompat
