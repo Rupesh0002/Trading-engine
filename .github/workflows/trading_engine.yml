@@ -1,10 +1,12 @@
 name: Trading Engine
 
-# ── Single daily trigger — job loops through the full trading session ─────────
+# ── Triggered by cron-job.org at 09:14 IST via repository_dispatch ───────────
+# workflow_dispatch is kept for manual runs / emergency fallback.
+# The old schedule cron is removed — GH Actions cron lags 15–45 min.
 on:
-  schedule:
-    - cron: '45 3 * * 1-5'   # 09:15 IST (UTC+5:30) — Mon–Fri
-  workflow_dispatch:          # manual trigger for testing
+  repository_dispatch:
+    types: [trading-session]
+  workflow_dispatch:          # manual trigger / fallback
 
 jobs:
   trading-session:
