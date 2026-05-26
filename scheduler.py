@@ -90,6 +90,15 @@ class TradingScheduler:
         from ml.adaptive import AdaptiveMemory
         self.adaptive      = AdaptiveMemory()
 
+        from signals.orb import ORBEngine
+        from config.settings import ORB_MIN_RANGE_PCT, ORB_MAX_RANGE_PCT, ORB_BUFFER_PCT, ORB_TRADE_END
+        self.orb_engine    = ORBEngine(
+            min_range_pct = ORB_MIN_RANGE_PCT,
+            max_range_pct = ORB_MAX_RANGE_PCT,
+            buffer_pct    = ORB_BUFFER_PCT,
+            trade_end     = ORB_TRADE_END,
+        )
+
         # ── Session state ─────────────────────────────────────────────────
         self.open_positions: List[Dict[str, Any]] = []
         self.morning_pcr:    Dict[str, Optional[float]] = {}
@@ -666,6 +675,60 @@ class TradingScheduler:
                 "[%s] %s PENDING retest | score=%d",
                 best["index"], best["result"].direction, best["conditions_met"],
             )
+
+        # ── ORB scan — fires only when no main signal is pending and no position open ──
+        from config.settings import ORB_ENABLED as _ORB_ENABLED
+        if _ORB_ENABLED and self._pending_signal is None and not self.open_positions:
+            for _orb_index in ACTIVE_INDICES:
+                _df_orb = self.feed.get_today_candles(_orb_index)
+                if _df_orb is None or len(_df_orb) < 2:
+                    continue
+
+                self.orb_engine.compute_opening_range(_orb_index, _df_orb)
+                _orb = self.orb_engine.evaluate(_orb_index, _df_orb, now_ist)
+                if not _orb:
+                    continue
+
+                logger.info("[ORB] [%s] %s breakout confirmed — entering trade", _orb_index, _orb.direction)
+                try:
+                    from telegram_alerts import send_orb_signal
+                    send_orb_signal(
+                        index          = _orb_index,
+                        direction      = _orb.direction,
+                        or_high        = _orb.or_high,
+                        or_low         = _orb.or_low,
+                        breakout_price = _orb.breakout_price,
+                        paper          = PAPER_MODE,
+                    )
+                except Exception as _oe:
+                    logger.debug("ORB Telegram alert failed: %s", _oe)
+
+                _orb_result = _types.SimpleNamespace(
+                    direction      = _orb.direction,
+                    conditions_met = _orb.conditions_met,
+                    details        = {
+                        "orb":          True,
+                        "or_high":      _orb.or_high,
+                        "or_low":       _orb.or_low,
+                        "or_range_pct": _orb.or_range_pct,
+                        "close":        _orb.breakout_price,
+                    },
+                )
+                self._enter_trade(
+                    {
+                        "index":          _orb_index,
+                        "result":         _orb_result,
+                        "df":             _df_orb,
+                        "spot":           _orb.breakout_price,
+                        "pcr":            self.morning_pcr.get(_orb_index),
+                        "conditions_met": _orb.conditions_met,
+                        "ml_override":    False,
+                    },
+                    vix=vix,
+                    tg_entry=None,
+                )
+                self.orb_engine.mark_traded(_orb_index)
+                break  # one ORB entry per cycle
 
     # ──────────────────────────────────────────────────────────────────────
     # Trade entry
@@ -1411,6 +1474,8 @@ class TradingScheduler:
             self.last_heartbeat_hour      = int(s.get("last_heartbeat_hour", -1))
 
             self.risk_manager.daily_pnl = float(s.get("daily_pnl", 0.0))
+            if "orb_state" in s:
+                self.orb_engine.load_state(s["orb_state"])
 
             # Restore pending retest signal
             self._pending_signal = s.get("pending_signal", None)
@@ -1545,6 +1610,7 @@ class TradingScheduler:
                 "vix_alert_sent":           self.vix_alert_sent,
                 "loss_limit_alert_sent":    self.loss_limit_alert_sent,
                 "last_heartbeat_hour":      self.last_heartbeat_hour,
+                "orb_state":               self.orb_engine.state_dict(),
             }
             with open(self._STATE_FILE, "w") as f:
                 json.dump(state, f, indent=2, default=str)
@@ -1555,6 +1621,7 @@ class TradingScheduler:
 
     def _reset_day(self) -> None:
         self.risk_manager.reset_daily()
+        self.orb_engine.reset_day()
         self.open_positions.clear()
         self._pending_shadows.clear()
         self._pending_signal = None

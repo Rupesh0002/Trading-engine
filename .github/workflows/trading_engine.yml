@@ -129,6 +129,11 @@ jobs:
           MAX_LOTS_CAP:               "3"
           LOT_SIZING_SL_PCT:          "0.12"
           REQUIRE_PREMIUM_DAY:        "True"
+          ORB_ENABLED:                "True"
+          ORB_MIN_RANGE_PCT:          "0.003"
+          ORB_MAX_RANGE_PCT:          "0.020"
+          ORB_BUFFER_PCT:             "0.001"
+          ORB_TRADE_END:              "13:00"
 
         run: |
           while true; do
