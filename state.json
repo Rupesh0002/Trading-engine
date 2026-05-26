@@ -1,6 +1,6 @@
 {
   "date": "2026-05-26",
-  "last_run_time": "10:05",
+  "last_run_time": "10:10",
   "running_capital": 100000.0,
   "daily_pnl": 0.0,
   "paper_mode": true,
@@ -15,7 +15,7 @@
   "open_positions": [],
   "pending_signal": null,
   "pending_shadows": [],
-  "shadow_signals_today": 6,
+  "shadow_signals_today": 9,
   "ml_override_trades_today": 0,
   "wins_today": 0,
   "losses_today": 0,
