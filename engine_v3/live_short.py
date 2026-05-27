@@ -90,6 +90,39 @@ class ShortLiveEngine:
 
         self._load_state(now.date())
 
+        # Send session-open alert on first candle of the day
+        if not self._state.get("session_open_sent"):
+            cap = self._state.get("running_capital", _CAPITAL)
+            _telegram(
+                f"🟢 <b>SHORT OPTIONS SESSION OPEN — PAPER</b>\n"
+                f"Index  : NIFTY\n"
+                f"Capital: ₹{cap:,.0f}\n"
+                f"🕐 {t5.strftime('%H:%M')} IST"
+            )
+            self._state["session_open_sent"] = True
+            self._save_state()
+
+        # Hourly heartbeat (fires once at 10:xx, 11:xx, 12:xx, 13:xx, 14:xx)
+        if 10 <= now.hour <= 14 and now.hour != self._state.get("last_heartbeat_hour", -1):
+            self._state["last_heartbeat_hour"] = now.hour
+            cap     = self._state.get("running_capital", _CAPITAL)
+            pnl     = self._state.get("daily_pnl", 0.0)
+            trades  = self._state.get("trades_today", 0)
+            has_pos = 1 if self._state.get("open_trade") else 0
+            try:
+                from telegram_alerts import send_hourly_status
+                send_hourly_status(
+                    time_str=t5.strftime("%H:%M"),
+                    open_positions=has_pos,
+                    daily_pnl=pnl,
+                    trades_today=trades,
+                    capital=cap,
+                    paper=True,
+                )
+            except Exception:
+                pass
+            self._save_state()
+
         try:
             from data.feed import DataFeed
             feed   = DataFeed(self.kite)
@@ -398,13 +431,15 @@ class ShortLiveEngine:
             # New day — reset daily state, keep running capital
             cap = self._state.get("running_capital", _CAPITAL)
             self._state = {
-                "date":            str(today),
-                "running_capital": cap,
-                "daily_pnl":       0.0,
-                "trades_today":    0,
-                "open_trade":      None,
-                "orb_ready":       False,
-                "eod_sent":        False,
+                "date":                str(today),
+                "running_capital":     cap,
+                "daily_pnl":           0.0,
+                "trades_today":        0,
+                "open_trade":          None,
+                "orb_ready":           False,
+                "eod_sent":            False,
+                "session_open_sent":   False,
+                "last_heartbeat_hour": -1,
             }
 
     def _save_state(self) -> None:
